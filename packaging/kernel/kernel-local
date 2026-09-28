@@ -1,0 +1,65 @@
+# kernel-local: Apex overlay on Fedora 45 kernel-x86_64-fedora.config (kernel 7.2.7-300.fc45)
+#
+# Fedora's kernel.spec merges this file (Source3001) into every config it generates, then
+# runs process_configs.sh -w -n -c. Two rules follow from that:
+#  - no trailing comments on option lines;
+#  - every NEW symbol that an option here exposes must be set here too, or the -n
+#    (unset option) check fails the build.
+# Values were compared with kernel-x86_64-fedora.config at dist-git commit
+# 353f6aa0fe79acfdb1bf7d3d710c30a6a4e97812 on 2026-09-24.
+
+# --- Changes from Fedora (ADR 0005), each to be justified by the M2 measurements ------
+
+# Idle power: batch RCU callbacks for seconds on idle CPUs (as ChromeOS and Android do).
+# Boot-time off switch: rcutree.enable_rcu_lazy=0
+CONFIG_RCU_LAZY=y
+# New symbol exposed by RCU_LAZY; it must be explicit or the -n check fails.
+# CONFIG_RCU_LAZY_DEFAULT_OFF is not set
+# RCU_LAZY only acts on offloaded (rcu_nocbs) CPUs: offload all of them without a boot argument.
+CONFIG_RCU_NOCB_CPU_DEFAULT_ALL=y
+
+# cpuidle: build TEO so it can be A/B-tested with cpuidle.governor=teo (menu stays the default).
+CONFIG_CPU_IDLE_GOV_TEO=y
+
+# --- Fedora defaults Apex depends on ------------------------------------------------------
+# Same values as Fedora today. Pinned here, kernel-local wins over a later Fedora change,
+# and if a dependency makes a value impossible, process_configs.sh -c (mismatch check)
+# fails the build instead of shipping a kernel without it.
+
+# sched_ext needs BTF; BPF CO-RE tools need /sys/kernel/btf/vmlinux.
+CONFIG_SCHED_CLASS_EXT=y
+CONFIG_DEBUG_INFO_BTF=y
+# CPU power: amd-pstate in active (EPP) mode, AMD PMC for s2idle, ACPI platform_profile.
+CONFIG_X86_AMD_PSTATE=y
+CONFIG_X86_AMD_PSTATE_DEFAULT_MODE=3
+CONFIG_AMD_PMC=m
+CONFIG_ACPI_PLATFORM_PROFILE=y
+# ASUS platform driver: charge_control_end_threshold and platform_profile.
+CONFIG_ASUS_WMI=m
+CONFIG_ASUS_NB_WMI=m
+# Preemption and tick as Fedora ships them (preempt=full stays available at boot).
+CONFIG_PREEMPT_DYNAMIC=y
+CONFIG_PREEMPT_LAZY=y
+CONFIG_HZ_1000=y
+# Secure Boot with a MOK: the machine keyring and module signing (ADR 0012).
+CONFIG_INTEGRITY_PLATFORM_KEYRING=y
+CONFIG_INTEGRITY_MACHINE_KEYRING=y
+CONFIG_MODULE_SIG=y
+CONFIG_RUST=y
+# Audio (ADR 0004): the HDA patch loader replays the [verb] lines of the Apex firmware
+# file, HWDEP and RECONFIG provide /sys/class/sound/hwC*D*/init_verbs, which the reported
+# boot check reads, and the ALC269 codec module is where the upstream quirk lands.
+CONFIG_SND_HDA_PATCH_LOADER=y
+CONFIG_SND_HDA_RECONFIG=y
+CONFIG_SND_HDA_HWDEP=y
+CONFIG_SND_HDA_CODEC_ALC269=m
+
+# --- Deliberately NOT changed --------------------------------------------------------------
+#  X86_NATIVE_CPU            would tune for the COPR builder's CPU; Zen 3 comes from %kcflags
+#                            in apex-spec-header.inc instead.
+#  LTO_CLANG_THIN            RUST depends on !(DEBUG_INFO_BTF && LTO); NVIDIA kmods would
+#                            also need LLVM=1.
+#  PREEMPT (full)            PREEMPT_DYNAMIC already allows preempt=full at boot.
+#  HZ, NR_CPUS               no measurable desktop benefit; many dependent mismatches.
+#  ASUS_WMI_DEPRECATED_ATTRS stays y: dropping the old asus-nb-wmi sysfs files is not
+#                            worth an ABI difference from Fedora.

@@ -1,0 +1,26 @@
+# Patches that Apex applies to Fedora's libfprint, in order.
+#
+# Format (parsed by build.sh):
+# - One patch file name per line, relative to packaging/libfprint/patches/,
+#   named NNNN-short-name.patch. No paths, no spaces, no duplicates.
+# - Patches are applied in the order listed, each on top of the ones before
+#   it. build.sh adds them to Fedora's libfprint.spec as Patch1001,
+#   Patch1002, ... and the spec's `%autosetup -S git` applies each one with
+#   `git apply --index`, which allows no fuzz.
+# - '#' starts a comment that runs to the end of the line. Blank lines are
+#   ignored.
+# - A patch in patches/ that is not listed here is never applied.
+#
+# Numbering:
+# - 00xx: enabled fixes. Only 00xx patches may be listed here.
+# - 01xx: carried but disabled. They stay in patches/, rebased so that each
+#   one applies on top of the listed 00xx patches. build.sh refuses an 01xx
+#   name here. To enable one, attach the debug log lines that show its
+#   trigger (patches/README.md names them), `git mv` it to the next free
+#   00xx number and add that name below.
+#
+# If a listed patch stops applying, the image ships Fedora's stock libfprint
+# and is labelled degraded=fingerprint (ADR 0006). Most likely upstream has
+# merged or changed the fix, so check that before rebasing.
+0001-elan-Retry-transient-pre-scan-status-on-04f3-0c6e.patch
+0002-elan-Bound-transient-retries-with-lift-semantics.patch

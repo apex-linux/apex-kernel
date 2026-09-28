@@ -1,0 +1,203 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Apex <apex@localhost>
+Date: Wed, 24 Sep 2026 02:00:00 +0700
+Subject: [PATCH] elan: Bound transient retries with lift semantics
+
+A pre-scan read normally blocks until a finger is present (0x55) or its
+timeout expires. The timeout is ELAN_CMD_TIMEOUT (10 s) before the first
+frame and ELAN_FINGER_TIMEOUT (200 ms) after it, and after the first
+frame it means the finger was lifted. The transient answers 0x00 and
+0xaf arrive at once instead, and the retry for them has no bound. A
+sensor that keeps answering them polls at 100 Hz for as long as the
+device is active, for example behind a lock screen, and a capture whose
+lift is answered with 0xaf is never submitted.
+
+Treat a transient answer as a pre-scan read that has not completed yet:
+
+- 0x0c6e with at least one frame: the finger was lifted. End the capture
+  at once. capture_complete() takes the same branch as for the
+  ELAN_FINGER_TIMEOUT read timeout: with ELAN_MIN_FRAMES or more frames
+  the image is submitted, otherwise FP_DEVICE_RETRY_TOO_SHORT is
+  reported. No protocol error.
+- 0x0c6e with no frame yet: retry after 10, 50 and 200 ms, then every
+  200 ms.
+- Every ELAN_RETRY_TRANSIENT_STATUS device: a run of consecutive
+  transient answers may last at most ELAN_CMD_TIMEOUT, timed with
+  g_get_monotonic_time() from the first answer of the run. 0x55 and the
+  start of each capture (elan_dev_reset_state()) end the run. No retry
+  is scheduled past the budget. When it is used up, the capture ends as
+  a pre-scan read timeout would: TOO_SHORT with no frames, never
+  FP_DEVICE_ERROR_PROTO.
+
+The only change for the 0x0c58 is the bound. It still retries every
+10 ms, before and after the first frame. Only a run of transient answers
+that lasts ELAN_CMD_TIMEOUT now ends the capture as a read timeout
+would (the image with enough frames, FP_DEVICE_RETRY_TOO_SHORT without),
+where it used to poll until the sensor answered something else.
+
+Cancelling the action does not remove a pending delayed retry. The retry
+fires, CAPTURE_WAIT_FINGER submits pre_scan_cmd with the cancelled
+cancellable, fpi_usb_transfer_submit() fails the transfer with
+G_IO_ERROR_CANCELLED, and the SSM ends on the existing cancellation
+path, so deactivation takes at most one extra delay (200 ms or less).
+This is safe because nothing else refers to the SSM while the delay is
+pending: no transfer is in flight, and dev_deactivate() only sets a
+flag. fpi_ssm_mark_completed() gives no protection here: with a pending
+delay it logs a BUG_ON critical, drops the delayed jump and completes
+the SSM anyway.
+
+New debug lines, for example:
+  transient pre-scan status 0x00: retry 2 in 50 ms
+  pre-scan status 0xaf after 10 frames: finger lifted
+  transient pre-scan status for 10000 ms (52 retries): ending capture as a read timeout
+
+Refs: libfprint#814 #879
+---
+ libfprint/drivers/elan.c |   74 +++++++++++++++++++++++++++++++++++++++++++++-
+ libfprint/drivers/elan.h |   17 +++++++++++
+ 2 files changed, 90 insertions(+), 1 deletion(-)
+
+diff --git a/libfprint/drivers/elan.c b/libfprint/drivers/elan.c
+index 21452c980592..03576d568acb 100644
+--- a/libfprint/drivers/elan.c
++++ b/libfprint/drivers/elan.c
+@@ -84,6 +84,11 @@ struct _FpiDeviceElan
+   unsigned char   raw_frame_height;
+   int             num_frames;
+   GSList         *frames;
++  /* run of consecutive transient pre-scan answers: how many were retried
++   * and the monotonic time (us) of the first one; cleared on 0x55 and by
++   * elan_dev_reset_state (), which starts every capture */
++  unsigned int    transient_retries;
++  gint64          transient_start;
+   /* end state */
+ };
+ G_DEFINE_TYPE (FpiDeviceElan, fpi_device_elan, FP_TYPE_IMAGE_DEVICE);
+@@ -103,6 +108,8 @@ elan_dev_reset_state (FpiDeviceElan *elandev)
+   elandev->cmd_timeout = ELAN_CMD_TIMEOUT;
+ 
+   elandev->calib_status = 0;
++  elandev->transient_retries = 0;
++  elandev->transient_start = 0;
+ 
+   g_free (elandev->last_read);
+   elandev->last_read = NULL;
+@@ -532,6 +539,69 @@ enum capture_states {
+   CAPTURE_NUM_STATES,
+ };
+ 
++/* Handle a transient pre-scan answer (0x00 or 0xaf) on a device in
++ * ELAN_RETRY_TRANSIENT_STATUS. Calls exactly one of fpi_ssm_mark_completed ()
++ * and fpi_ssm_jump_to_state_delayed ().
++ *
++ * Completing the SSM without an error takes the same branch of
++ * capture_complete () as a pre-scan read that timed out in
++ * CAPTURE_WAIT_FINGER: the image is submitted if there are enough frames,
++ * otherwise FP_DEVICE_RETRY_TOO_SHORT is reported.
++ *
++ * Cancellation does not remove a pending delayed jump. While it is pending,
++ * nothing else refers to the SSM: no transfer is in flight, and
++ * dev_deactivate () only sets a flag. The jump fires, CAPTURE_WAIT_FINGER
++ * submits pre_scan_cmd with the cancelled cancellable,
++ * fpi_usb_transfer_submit () fails that transfer with G_IO_ERROR_CANCELLED
++ * from a zero-delay timeout, and the SSM ends on the usual cancellation
++ * path. Nothing may complete the SSM while the delay is pending:
++ * fpi_ssm_mark_completed () does not refuse, it logs a BUG_ON critical,
++ * drops the pending jump and completes the SSM. */
++static void
++elan_transient_status (FpiSsm *ssm, FpiDeviceElan *self)
++{
++  /* ELAN_TRANSIENT_STATUS_BACKOFF delays, the last one repeats. The first
++   * one is the upstream 10 ms retry delay, which other devices keep. */
++  static const int backoff_ms[] = { 10, 50, 200 };
++  gint64 now = g_get_monotonic_time ();
++  gint64 elapsed_ms;
++  int delay_ms;
++
++  if ((self->dev_type & ELAN_TRANSIENT_STATUS_LIFT) && self->num_frames > 0)
++    {
++      fp_dbg ("pre-scan status 0x%02x after %d frames: finger lifted",
++              self->last_read[0], self->num_frames);
++      fpi_ssm_mark_completed (ssm);
++      return;
++    }
++
++  if (self->transient_retries == 0)
++    self->transient_start = now;
++  elapsed_ms = (now - self->transient_start) / 1000;
++
++  if (elapsed_ms >= ELAN_TRANSIENT_STATUS_BUDGET)
++    {
++      fp_dbg ("transient pre-scan status for %" G_GINT64_FORMAT " ms (%u retries): "
++              "ending capture as a read timeout",
++              elapsed_ms, self->transient_retries);
++      fpi_ssm_mark_completed (ssm);
++      return;
++    }
++
++  if (self->dev_type & ELAN_TRANSIENT_STATUS_BACKOFF)
++    delay_ms = backoff_ms[MIN (self->transient_retries, G_N_ELEMENTS (backoff_ms) - 1)];
++  else
++    delay_ms = backoff_ms[0];
++
++  /* never sleep past the budget */
++  delay_ms = (int) MIN (delay_ms, ELAN_TRANSIENT_STATUS_BUDGET - elapsed_ms);
++
++  self->transient_retries++;
++  fp_dbg ("transient pre-scan status 0x%02x: retry %u in %d ms",
++          self->last_read[0], self->transient_retries, delay_ms);
++  fpi_ssm_jump_to_state_delayed (ssm, CAPTURE_WAIT_FINGER, delay_ms);
++}
++
+ static void
+ capture_run_state (FpiSsm *ssm, FpDevice *dev)
+ {
+@@ -557,6 +627,8 @@ capture_run_state (FpiSsm *ssm, FpDevice *dev)
+ 
+       if (self->last_read && self->last_read[0] == 0x55)
+         {
++          self->transient_retries = 0;
++          self->transient_start = 0;
+           fpi_image_device_report_finger_status (idev, TRUE);
+           elan_run_cmd (ssm, dev, &get_image_cmd, ELAN_CMD_TIMEOUT);
+         }
+@@ -565,7 +637,7 @@ capture_run_state (FpiSsm *ssm, FpDevice *dev)
+         {
+           /* 0x00 - not ready
+            * 0xaf - finger removed or sensor busy (seen on 0x0c58 and 0x0c6e) */
+-          fpi_ssm_jump_to_state_delayed (ssm, CAPTURE_WAIT_FINGER, 10);
++          elan_transient_status (ssm, self);
+         }
+       else
+         {
+diff --git a/libfprint/drivers/elan.h b/libfprint/drivers/elan.h
+index 446ccc58f739..1e866f62c5fb 100644
+--- a/libfprint/drivers/elan.h
++++ b/libfprint/drivers/elan.h
+@@ -44,6 +44,23 @@
+  * #879). */
+ #define ELAN_RETRY_TRANSIENT_STATUS (ELAN_0C58 | ELAN_0C6E)
+ 
++/* A transient answer arrives at once, where a pre-scan read would otherwise
++ * block until a finger is present or its timeout expires. A run of
++ * consecutive transient answers is therefore bounded by the timeout that
++ * read has while waiting for the first frame. When the run reaches it, the
++ * capture ends exactly as if that read had timed out. */
++#define ELAN_TRANSIENT_STATUS_BUDGET ELAN_CMD_TIMEOUT
++
++/* devices on which a transient answer after at least one frame means that
++ * the finger was lifted: the capture ends at once, as if the pre-scan read
++ * had timed out, instead of polling for another frame. */
++#define ELAN_TRANSIENT_STATUS_LIFT ELAN_0C6E
++
++/* devices on which transient answers before the first frame are polled with
++ * an increasing delay (see elan_transient_status ()) rather than every 10 ms,
++ * so an idle sensor that keeps answering cannot poll at 100 Hz. */
++#define ELAN_TRANSIENT_STATUS_BACKOFF ELAN_0C6E
++
+ /* min FW version that supports calibration */
+ #define ELAN_MIN_CALIBRATION_FW 0x0138
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.org>
+Date: Wed, 23 Sep 2026 12:00:00 +0700
+Subject: [PATCH] ALSA: hda/realtek: Fix speaker output on ASUS Vivobook Pro 14X M7400QC
+
+The ASUS Vivobook Pro 14X OLED M7400QC (PCI SSID 1043:1ab2, Realtek
+ALC294, single internal speaker on NID 0x14, no external smart amp)
+has no matching entry in the quirk table, so no fixup is applied.
+
+After a warm reboot from Windows the speaker output is silent or
+crackles, and only a full power-off brings it back, so the bad state
+lives in the codec and survives a warm reboot.  Dumping the Realtek
+COEF registers on NID 0x20 after a cold boot and after a warm reboot
+from Windows (BIOS M7400QC.311) gives:
+
+  COEF    cold boot    warm reboot from Windows
+  0x0f    0x____       0x____
+  0x1b    0x____       0x____
+  0x40    0x____       0x____
+
+[Describe the measured difference here.  This fixup assumes it is
+bit 10 of COEF 0x1b, the bit the Windows driver leaves cleared on the
+ASUS UX431DA (ALC294_FIXUP_ASUS_COEF_1B, bug 207553) and on the Intel
+Hades Canyon ALC700.]
+
+Restore only bit 10 of COEF 0x1b at every init.  A read-modify-write
+keeps the other bits at the value this codec came up with; writing a
+whole value such as 0x4e4b was reported to break cold boot on another
+ALC294 model (bug 219415).  Chain ALC294_FIXUP_ASUS_HPE for the EAPD
+COEF 0x0f and the ASUS headset-mic pin, as the other ALC294
+Vivobook/Zenbook entries do.
+
+With the fixup, COEF 0x1b reads 0x____ after a warm reboot from
+Windows, and the speaker works after cold boot, warm reboot from
+Windows, suspend/resume and runtime suspend.
+
+Link: https://bugzilla.kernel.org/show_bug.cgi?id=207553
+Link: https://bugzilla.kernel.org/show_bug.cgi?id=219415
+Link: https://askubuntu.com/questions/1420976
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Your Name <you@example.org>
+---
+TODO before sending (git am drops everything between the --- line and the diff):
+
+- Nothing in the message above is measured yet.  Run
+  hardware/m7400qc/audio/coef-dump.sh (ADR 0004) for dump A (cold boot)
+  and dump B (warm reboot from Windows), fill in the table, and write
+  the paragraph in brackets from what the dumps show.
+- If bit 10 of COEF 0x1b is not the difference, or not the only one,
+  this fixup is wrong: rework it before sending.
+- Keep the ALC294_FIXUP_ASUS_HPE chain only if dumps A and B differ at
+  COEF 0x0f; otherwise drop the chain and that sentence.
+- Pass the audio acceptance test in docs/hardware/ with the Apex HDA
+  patch firmware removed, then add your Tested-by.
+- Replace the From: and Signed-off-by: placeholders with your identity.
+- Rebase onto tiwai/sound.git for-next (the SSID table is sorted and
+  may have changed), run scripts/checkpatch.pl --strict, and send to
+  the addresses from scripts/get_maintainer.pl.
+- Until then, packaging/kernel/series keeps this patch disabled.
+
+ sound/hda/codecs/realtek/alc269.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/sound/hda/codecs/realtek/alc269.c b/sound/hda/codecs/realtek/alc269.c
+index c31fed1..83c834d 100644
+--- a/sound/hda/codecs/realtek/alc269.c
++++ b/sound/hda/codecs/realtek/alc269.c
+@@ -2755,6 +2755,19 @@ static void alc289_fixup_asus_ga401(struct hda_codec *codec,
+ 		spec->gen.preferred_dacs = preferred_pairs;
+ }
+ 
++/*
++ * The Windows driver may leave COEF 0x1b bit 10 cleared, and the codec keeps
++ * that state over a warm reboot; the speaker output then becomes choppy or
++ * silent.  Restore only that bit at each init (see also Intel Hades Canyon).
++ */
++static void alc294_fixup_asus_coef_1b_bit10(struct hda_codec *codec,
++					    const struct hda_fixup *fix,
++					    int action)
++{
++	if (action == HDA_FIXUP_ACT_INIT)
++		alc_update_coef_idx(codec, 0x1b, 0x0400, 0x0400);
++}
++
+ /* The DAC of NID 0x3 will introduce click/pop noise on headphones, so invalidate it */
+ static void alc285_fixup_invalidate_dacs(struct hda_codec *codec,
+ 			      const struct hda_fixup *fix, int action)
+@@ -4079,6 +4092,7 @@ enum {
+ 	ALC294_FIXUP_ASUS_ALLY_SPEAKER,
+ 	ALC294_FIXUP_ASUS_HPE,
+ 	ALC294_FIXUP_ASUS_COEF_1B,
++	ALC294_FIXUP_ASUS_COEF_1B_BIT10,
+ 	ALC294_FIXUP_ASUS_GX502_HP,
+ 	ALC294_FIXUP_ASUS_GX502_PINS,
+ 	ALC294_FIXUP_ASUS_GX502_VERBS,
+@@ -5796,6 +5810,12 @@ static const struct hda_fixup alc269_fixups[] = {
+ 		.chained = true,
+ 		.chain_id = ALC289_FIXUP_ASUS_GA401,
+ 	},
++	[ALC294_FIXUP_ASUS_COEF_1B_BIT10] = {
++		.type = HDA_FIXUP_FUNC,
++		.v.func = alc294_fixup_asus_coef_1b_bit10,
++		.chained = true,
++		.chain_id = ALC294_FIXUP_ASUS_HPE,
++	},
+ 	[ALC285_FIXUP_HP_GPIO_LED] = {
+ 		.type = HDA_FIXUP_FUNC,
+ 		.v.func = alc285_fixup_hp_gpio_led,
+@@ -7597,6 +7617,7 @@ static const struct hda_quirk alc269_fixup_tbl[] = {
+ 	SND_PCI_QUIRK(0x1043, 0x1a83, "ASUS UM5302LA", ALC294_FIXUP_CS35L41_I2C_2),
+ 	SND_PCI_QUIRK(0x1043, 0x1a8e, "ASUS G712LWS", ALC294_FIXUP_LENOVO_MIC_LOCATION),
+ 	SND_PCI_QUIRK(0x1043, 0x1a8f, "ASUS UX582ZS", ALC245_FIXUP_CS35L41_SPI_2),
++	SND_PCI_QUIRK(0x1043, 0x1ab2, "ASUS M7400QC", ALC294_FIXUP_ASUS_COEF_1B_BIT10),
+ 	SND_PCI_QUIRK(0x1043, 0x1b11, "ASUS UX431DA", ALC294_FIXUP_ASUS_COEF_1B),
+ 	SND_PCI_QUIRK(0x1043, 0x1b13, "ASUS U41SV/GA403U", ALC285_FIXUP_ASUS_GA403U_HEADSET_MIC),
+ 	SND_PCI_QUIRK(0x1043, 0x1b93, "ASUS G614JVR/JIR", ALC245_FIXUP_CS35L41_SPI_2),
+-- 
+2.51.0
+

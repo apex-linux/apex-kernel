@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Uku Kert Paidra <ukukert@gmail.com>
+Date: Tue, 25 Aug 2026 13:24:03 +0300
+Subject: [PATCH] elan: Wait for sensor to leave pre-scan after stopping capture
+
+After a short swipe the driver reports a retry and sends stop_cmd
+(0x00 0x0b), which has no response, and reports finger-off at once.
+That re-enters calibration, which sends get_image_cmd about 1 ms later,
+before the sensor has left its wait-for-finger state. On the 0x0c11
+that image read hangs for ELAN_CMD_TIMEOUT and the enrollment fails
+with a timeout.
+
+Add a 10 ms settle state after stop_cmd, before stop_capture_complete()
+reports finger-off.
+
+[Apex: backport of draft MR !647, commit 7500a883c072, unchanged except
+for context. Applies to v1.94.100 with or without the Apex patches 0001,
+0002 and 0101. Apex carries it but does not enable it. Enable it only
+when a debug log shows that the capture after a retry fails or times
+out in calibration right after STOP_CAPTURE.]
+
+Link: https://gitlab.freedesktop.org/libfprint/libfprint/-/merge_requests/647
+Refs: libfprint#817 #796 #601 #836 #348
+---
+ libfprint/drivers/elan.c |    7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/libfprint/drivers/elan.c b/libfprint/drivers/elan.c
+index 03576d568acb..8e5889ff0a5f 100644
+--- a/libfprint/drivers/elan.c
++++ b/libfprint/drivers/elan.c
+@@ -474,6 +474,7 @@ elan_run_cmd (FpiSsm                *ssm,
+ 
+ enum stop_capture_states {
+   STOP_CAPTURE,
++  STOP_CAPTURE_SETTLE,
+   STOP_CAPTURE_NUM_STATES,
+ };
+ 
+@@ -488,6 +489,12 @@ stop_capture_run_state (FpiSsm *ssm, FpDevice *dev)
+       elan_run_cmd (ssm, dev, &stop_cmd,
+                     ELAN_CMD_TIMEOUT);
+       break;
++
++    case STOP_CAPTURE_SETTLE:
++      /* stop_cmd has no response, but the sensor needs time to leave
++       * pre-scan before another calibration can request an image. */
++      fpi_ssm_next_state_delayed (ssm, 10);
++      break;
+     }
+ }
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,251 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Apex <apex@localhost>
+Date: Wed, 24 Sep 2026 02:00:00 +0700
+Subject: [PATCH] elan: Recover from a dark frame on 04f3:0c6e
+
+elan_save_img_frame() rejects a frame that is darker than the
+background at every pixel. That happens when the background was taken
+with a finger on the sensor. CAPTURE_CHECK_ENOUGH_FRAMES then fails the
+whole session with a message-less FP_DEVICE_ERROR_GENERAL ("unspecified
+error" in fprintd). The 0x0c6e sits in an ASUS power key, so a finger
+often rests on it while calibration takes the background.
+
+Turning the error into a retry at the end of the capture is not enough.
+stop_capture_complete() reports finger-off without asking the sensor,
+and the next AWAIT_FINGER_ON (enroll), or fprintd's restart of the
+identify, calibrates about 1 ms later. The new background is taken with
+the same finger on the sensor, the next frame is dark again, and a
+resting finger turns into a loop of retries, each only a few USB
+transfers long.
+
+So for ELAN_RETRY_ON_DARK_FRAME devices (0x0c6e):
+
+- Report FP_DEVICE_RETRY_REMOVE_FINGER at the first dark frame, while
+  the finger is still there, and drop all frames of that capture.
+- Keep the capture running until the finger is lifted, the same way it
+  runs after a good frame: pre_scan_cmd with ELAN_FINGER_TIMEOUT, and for
+  each 0x55 the frame is read and dropped. Polls are
+  ELAN_DARK_FRAME_POLL_DELAY (50 ms) apart. The capture ends when the
+  read times out, when the sensor answers 0x00 or 0xaf (the 0002 lift
+  semantics, which now also take a dark frame as proof of a finger), or
+  ELAN_DARK_FRAME_LIFT_TIMEOUT (10 s) after the dark frame. Only then is
+  stop_cmd sent and finger-off reported, so the next calibration
+  normally takes its background without the finger.
+- Allow at most ELAN_DARK_FRAME_MAX_RETRIES (3) consecutive captures to
+  end this way. The next dark frame fails the session with
+  FP_DEVICE_ERROR_GENERAL, as before. A capture that ends without a dark
+  frame resets the count, which survives fprintd's restarts of the
+  identify.
+
+A finger that is never lifted therefore gives three prompts, 10 s apart,
+and then the stock error.
+
+Apex carries this patch but does not enable it. Enable it only when a
+debug log from the sensor shows
+  frame darker than background; finger present during calibration?
+followed by the session error.
+
+New debug lines, for example:
+  frame darker than background: asking to remove the finger (retry 1 of 3)
+  finger still present after the dark frame: frame dropped
+  finger still present 10000 ms after the dark frame: ending capture
+  capture after a dark frame ended; the next one calibrates again
+  frame darker than background in 4 captures in a row: giving up
+
+Applies on top of the Apex patches 0001 and 0002.
+---
+ libfprint/drivers/elan.c |   97 ++++++++++++++++++++++++++++++++++++++++++++--
+ libfprint/drivers/elan.h |   20 +++++++++
+ 2 files changed, 113 insertions(+), 4 deletions(-)
+
+diff --git a/libfprint/drivers/elan.c b/libfprint/drivers/elan.c
+index 03576d568acb..3be6ad716b43 100644
+--- a/libfprint/drivers/elan.c
++++ b/libfprint/drivers/elan.c
+@@ -89,6 +89,15 @@ struct _FpiDeviceElan
+    * elan_dev_reset_state (), which starts every capture */
+   unsigned int    transient_retries;
+   gint64          transient_start;
++  /* ELAN_RETRY_ON_DARK_FRAME: a frame of this capture was darker than the
++   * background, and the capture now waits for the finger to be lifted;
++   * dark_frame_start is the monotonic time (us) of that frame */
++  gboolean        dark_frame;
++  gint64          dark_frame_start;
++  /* consecutive captures that ended on a dark frame: counted in
++   * elan_dark_frame (), cleared in dev_init () and by a capture without a dark
++   * frame, and kept by elan_dev_reset_state () */
++  unsigned int    dark_frame_retries;
+   /* end state */
+ };
+ G_DEFINE_TYPE (FpiDeviceElan, fpi_device_elan, FP_TYPE_IMAGE_DEVICE);
+@@ -110,6 +119,8 @@ elan_dev_reset_state (FpiDeviceElan *elandev)
+   elandev->calib_status = 0;
+   elandev->transient_retries = 0;
+   elandev->transient_start = 0;
++  elandev->dark_frame = FALSE;
++  elandev->dark_frame_start = 0;
+ 
+   g_free (elandev->last_read);
+   elandev->last_read = NULL;
+@@ -567,7 +578,9 @@ elan_transient_status (FpiSsm *ssm, FpiDeviceElan *self)
+   gint64 elapsed_ms;
+   int delay_ms;
+ 
+-  if ((self->dev_type & ELAN_TRANSIENT_STATUS_LIFT) && self->num_frames > 0)
++  /* a dark frame also means that a finger was present */
++  if ((self->dev_type & ELAN_TRANSIENT_STATUS_LIFT) &&
++      (self->num_frames > 0 || self->dark_frame))
+     {
+       fp_dbg ("pre-scan status 0x%02x after %d frames: finger lifted",
+               self->last_read[0], self->num_frames);
+@@ -602,6 +615,68 @@ elan_transient_status (FpiSsm *ssm, FpiDeviceElan *self)
+   fpi_ssm_jump_to_state_delayed (ssm, CAPTURE_WAIT_FINGER, delay_ms);
+ }
+ 
++/* Handle a frame darker than the background on a device in
++ * ELAN_RETRY_ON_DARK_FRAME, and every frame read after it in the same
++ * capture. Calls exactly one of fpi_ssm_mark_failed (),
++ * fpi_ssm_mark_completed () and fpi_ssm_jump_to_state_delayed ().
++ *
++ * Calibration takes the background right before the capture, so a dark
++ * frame means that the finger was on the sensor already then. On the first
++ * dark frame, FP_DEVICE_RETRY_REMOVE_FINGER is reported at once, while the
++ * finger is still there. The session fails with FP_DEVICE_ERROR_GENERAL
++ * instead, as on other devices, when ELAN_DARK_FRAME_MAX_RETRIES
++ * consecutive captures have already ended on a dark frame.
++ *
++ * Finger-off is reported, and the next calibration starts, only when this
++ * capture ends. So the capture goes on until the finger is lifted, as it
++ * would after a good frame: pre_scan_cmd with ELAN_FINGER_TIMEOUT, sent
++ * ELAN_DARK_FRAME_POLL_DELAY after the previous frame. A 0x55 means the
++ * finger is still there; its frame is read, dropped, and this function runs
++ * again. The capture ends when that read times out, when an
++ * ELAN_TRANSIENT_STATUS_LIFT device answers 0x00 or 0xaf, or at the latest
++ * ELAN_DARK_FRAME_LIFT_TIMEOUT after the dark frame. capture_complete () then
++ * reports nothing more.
++ *
++ * A pending delayed jump behaves on cancellation as described for
++ * elan_transient_status (). */
++static void
++elan_dark_frame (FpiSsm *ssm, FpiDeviceElan *self)
++{
++  gint64 now = g_get_monotonic_time ();
++
++  if (!self->dark_frame)
++    {
++      if (self->dark_frame_retries >= ELAN_DARK_FRAME_MAX_RETRIES)
++        {
++          fp_dbg ("frame darker than background in %u captures in a row: giving up",
++                  self->dark_frame_retries + 1);
++          fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
++          return;
++        }
++
++      self->dark_frame = TRUE;
++      self->dark_frame_start = now;
++      self->dark_frame_retries++;
++      fp_dbg ("frame darker than background: asking to remove the finger (retry %u of %d)",
++              self->dark_frame_retries, ELAN_DARK_FRAME_MAX_RETRIES);
++      fpi_image_device_retry_scan (FP_IMAGE_DEVICE (self), FP_DEVICE_RETRY_REMOVE_FINGER);
++    }
++  else if (now - self->dark_frame_start >= (gint64) ELAN_DARK_FRAME_LIFT_TIMEOUT * 1000)
++    {
++      fp_dbg ("finger still present %d ms after the dark frame: ending capture",
++              ELAN_DARK_FRAME_LIFT_TIMEOUT);
++      fpi_ssm_mark_completed (ssm);
++      return;
++    }
++  else
++    {
++      fp_dbg ("finger still present after the dark frame: frame dropped");
++    }
++
++  self->cmd_timeout = ELAN_FINGER_TIMEOUT;
++  fpi_ssm_jump_to_state_delayed (ssm, CAPTURE_WAIT_FINGER, ELAN_DARK_FRAME_POLL_DELAY);
++}
++
+ static void
+ capture_run_state (FpiSsm *ssm, FpDevice *dev)
+ {
+@@ -650,8 +725,13 @@ capture_run_state (FpiSsm *ssm, FpDevice *dev)
+       break;
+ 
+     case CAPTURE_CHECK_ENOUGH_FRAMES:
+-      r = elan_save_img_frame (self);
+-      if (r < 0)
++      /* after a dark frame, every frame is dropped */
++      r = self->dark_frame ? -1 : elan_save_img_frame (self);
++      if (r < 0 && (self->dev_type & ELAN_RETRY_ON_DARK_FRAME))
++        {
++          elan_dark_frame (ssm, self);
++        }
++      else if (r < 0)
+         {
+           fpi_ssm_mark_failed (ssm, fpi_device_error_new (FP_DEVICE_ERROR_GENERAL));
+         }
+@@ -682,7 +762,12 @@ capture_complete (FpiSsm *ssm, FpDevice *_dev, GError *error)
+       (g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT) &&
+        fpi_ssm_get_cur_state (ssm) == CAPTURE_WAIT_FINGER))
+     {
+-      if (self->num_frames >= ELAN_MIN_FRAMES)
++      if (self->dark_frame)
++        {
++          /* the retry was reported at the dark frame */
++          fp_dbg ("capture after a dark frame ended; the next one calibrates again");
++        }
++      else if (self->num_frames >= ELAN_MIN_FRAMES)
+         {
+           elan_submit_image (dev);
+         }
+@@ -699,6 +784,9 @@ capture_complete (FpiSsm *ssm, FpDevice *_dev, GError *error)
+       fpi_image_device_session_error (dev, error);
+     }
+ 
++  if (!self->dark_frame)
++    self->dark_frame_retries = 0;
++
+   /* Note: We always stop capturing even if that may not be needed always.
+    * Doing this between captures appears to make it at least less likely for
+    * devices to end up in a bad state.
+@@ -1010,6 +1098,7 @@ dev_init (FpImageDevice *dev)
+   /* common params */
+   self->dev_type = fpi_device_get_driver_data (FP_DEVICE (dev));
+   self->background = NULL;
++  self->dark_frame_retries = 0;
+   self->process_frame = elan_process_frame_thirds;
+ 
+   switch (self->dev_type)
+diff --git a/libfprint/drivers/elan.h b/libfprint/drivers/elan.h
+index 1e866f62c5fb..74e435a65657 100644
+--- a/libfprint/drivers/elan.h
++++ b/libfprint/drivers/elan.h
+@@ -61,6 +61,26 @@
+  * so an idle sensor that keeps answering cannot poll at 100 Hz. */
+ #define ELAN_TRANSIENT_STATUS_BACKOFF ELAN_0C6E
+ 
++/* press sensors (0x0c6e sits in an ASUS power key) are often touched while
++ * calibration takes the background. On these devices a frame darker than
++ * that background does not fail the session with FP_DEVICE_ERROR_GENERAL.
++ * FP_DEVICE_RETRY_REMOVE_FINGER is reported at once, and the capture waits
++ * for the finger to be lifted before it ends, so that the next calibration
++ * does not take its background with the finger still on the sensor (see
++ * elan_dark_frame ()). */
++#define ELAN_RETRY_ON_DARK_FRAME ELAN_0C6E
++
++/* ELAN_RETRY_ON_DARK_FRAME: the longest wait for the lift after a dark
++ * frame, and the delay between two pre-scan polls while the finger is still
++ * present (ms) */
++#define ELAN_DARK_FRAME_LIFT_TIMEOUT ELAN_CMD_TIMEOUT
++#define ELAN_DARK_FRAME_POLL_DELAY 50
++
++/* ELAN_RETRY_ON_DARK_FRAME: consecutive captures that may end on a dark frame
++ * with a retry. The next dark frame fails the session with
++ * FP_DEVICE_ERROR_GENERAL, as on other devices. */
++#define ELAN_DARK_FRAME_MAX_RETRIES 3
++
+ /* min FW version that supports calibration */
+ #define ELAN_MIN_CALIBRATION_FW 0x0138
+ 
+-- 
+2.53.0
+
