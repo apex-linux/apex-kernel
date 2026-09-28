@@ -56,7 +56,7 @@ TODO before sending (git am drops everything between the --- line and the diff):
 - Rebase onto tiwai/sound.git for-next (the SSID table is sorted and
   may have changed), run scripts/checkpatch.pl --strict, and send to
   the addresses from scripts/get_maintainer.pl.
-- Until then, packaging/kernel/series keeps this patch disabled.
+- Until then, it stays out of packaging/pkgs/kernel/series (ADR 0015).
 
  sound/hda/codecs/realtek/alc269.c | 21 +++++++++++++++++++++
  1 file changed, 21 insertions(+)

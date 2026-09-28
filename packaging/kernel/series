@@ -1,7 +1,0 @@
-# Kernel patches that copr.mk concatenates into linux-kernel-test.patch, in order.
-# One file name per line, relative to patches/; '#' starts a comment.
-#
-# 0001 stays disabled until its COEF values are measured on the laptop and the audio
-# acceptance test passes (ADR 0004); the HDA patch firmware covers the stock kernel
-# until then. See the TODO block below the --- line of the patch.
-#0001-ALSA-hda-realtek-Fix-speaker-output-on-ASUS-M7400QC.patch
