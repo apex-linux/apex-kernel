@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# CI wrapper around packaging/libfprint/build.sh (ADR 0006, libfprint.yml).
+# Wrapper around packaging/libfprint/build.sh (ADR 0006) for the builder VM
+# (tools/builder-vm/build-image.sh).
 #
 #   libfprint.sh key            print the cache key as an OCI tag
 #   libfprint.sh build OUTDIR   rebuild; exit 0 built, 3 degraded, anything else failed
