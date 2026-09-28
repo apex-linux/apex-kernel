@@ -10,7 +10,7 @@ Apex rebuilds **the libfprint SRPM that Fedora ships** with a short list of patc
 |---|---|
 | `series` | the enabled patches, in the order they are applied |
 | `patches/` | every patch Apex carries, enabled or not |
-| `build.sh` | the rebuild, run by `libfprint.yml` in `registry.fedoraproject.org/fedora:45` |
+| `build.sh` | the rebuild, run by `.github/scripts/libfprint.sh build` in `registry.fedoraproject.org/fedora:45`, in the builder VM |
 
 ## What `build.sh` does
 
@@ -42,8 +42,9 @@ Apex rebuilds **the libfprint SRPM that Fedora ships** with a short list of patc
    `dist=.fc45.apex1` it must yield the stock release plus `.apex1`. It then asks rpm
    itself (`rpm.vercmp`) that `1.94.100-1.fc45.apex1` sorts above `1.94.100-1.fc45`.
    A Fedora rebuild (`-2.fc45`) sorts above ours again. That is intended: the cache key
-   changes, CI rebuilds, and meanwhile the compose still takes ours, because the local
-   repository has priority 1 and the Fedora repositories carry `excludepkgs=libfprint`.
+   changes, and the next full build in the builder VM rebuilds from the new SRPM.
+   Until then the compose still takes ours, because the local repository has priority 1
+   and the Fedora repositories carry `excludepkgs=libfprint`.
 5. **Runs `%prep` twice.** First unpatched: if Fedora's own `%prep` fails, that is an
    infrastructure error (exit 1). Then with one `PatchNNNN:` line per series entry
    inserted after `Source0:` (numbered from 1001, in series order, copied to `SOURCES`
@@ -58,8 +59,9 @@ Apex rebuilds **the libfprint SRPM that Fedora ships** with a short list of patc
 8. **Tests** (see below), then copies the binary RPMs to `OUT_DIR` and writes
    `manifest.txt` and `key.txt`.
 
-`build.sh key` stops after step 2 and prints the cache key, so the workflow can skip the
-build when `ghcr.io/sekirokenjii/apex-libfprint:<key>` already exists:
+`build.sh key` stops after step 2 and prints the cache key. It was the tag of
+`ghcr.io/sekirokenjii/apex-libfprint`; nothing publishes one now, so the builder VM
+always builds. The key looks like this:
 
 ```
 libfprint-1.94.100-1.fc45-s<first 12 hex digits of the series hash>
@@ -71,8 +73,10 @@ any change that alters the output changes the key.
 
 ## Running it
 
-In CI (inside `registry.fedoraproject.org/fedora:45`, pinned by digest, as root,
-repository checked out):
+In the builder VM, `.github/scripts/libfprint.sh build` runs it inside
+`registry.fedoraproject.org/fedora:45`, as root, with the repository checked out. It
+passes `GA_REACHED` and `TESTING_INCLUDEPKGS` with the image compose's values. The bare
+command:
 
 ```bash
 GA_REACHED=0 OUT_DIR=/out packaging/libfprint/build.sh
@@ -91,8 +95,8 @@ GA_REACHED=0 OUT_DIR=/out packaging/libfprint/build.sh
 | `FEDORA_KEY_DIR` | where the key file is, default `/usr/share/pki/rpm-gpg` (the fingerprint check still applies) |
 | `WORK_DIR` | scratch directory, default a new `mktemp -d` |
 
-Locally, run the same command in the Fedora 45 builder VM
-([ADR 0013](../../docs/adr/0013-build-pipeline.md)), for example
+By hand, run the same command in the Fedora 45 builder VM
+([tools/builder-vm](../../tools/builder-vm/README.md)), for example
 `podman run --rm -v "$PWD:/src:Z" -w /src registry.fedoraproject.org/fedora:45 env GA_REACHED=0 OUT_DIR=/src/target/libfprint packaging/libfprint/build.sh`.
 
 ## The `series` file
@@ -127,8 +131,8 @@ and `b/` prefixes, applied with `-p1`.
   shows their trigger; `patches/README.md` describes each patch and the log lines to
   look for.
 - **Enabling a 01xx patch:** attach the evidence (the log lines, not raw frames) to the
-  change, `git mv` the file to the next free `00xx` number, add it to `series` and let
-  CI rebuild. Disabling works the other way round.
+  change, `git mv` the file to the next free `00xx` number, add it to `series` and
+  rebuild in the builder VM (`just vm-image`). Disabling works the other way round.
 
 ## Tests
 
@@ -171,23 +175,23 @@ retry path itself: that is the hardware acceptance test in `docs/hardware/`.
 
 ## Exit codes and degrading
 
-| Exit | Meaning | What CI does |
+| Exit | Meaning | What the builder VM does |
 |---|---|---|
-| 0 | built | push `apex-libfprint:<key>` |
-| 1 | error before any patch was tried: repository, download, signature, NVR arithmetic, unpatched `%prep` | the job fails red; nothing is pushed |
-| 2 | usage or `series` error | the job fails red; fix the repository |
-| 3 | **degraded**: a patch does not apply, the tree is not pristine plus series, the patched build fails, or the elan replay test fails | push nothing, open an issue with `OUT_DIR/degraded.txt`, and let the image ship Fedora's stock libfprint |
+| 0 | built | the image takes the RPMs in `_build/libfprint/` |
+| 1 | error before any patch was tried: repository, download, signature, NVR arithmetic, unpatched `%prep` | the image build stops |
+| 2 | usage or `series` error | the image build stops; fix the repository |
+| 3 | **degraded**: a patch does not apply, the tree is not pristine plus series, the patched build fails, or the elan replay test fails | the image ships Fedora's stock libfprint; `OUT_DIR/degraded.txt` holds the reason |
 
 Degrading never blocks OS updates (ADR 0006): the image build falls back to stock
 libfprint (it drops `excludepkgs=libfprint` and the local libfprint package) and sets
 the label `io.github.sekirokenjii.apex.degraded=fingerprint`, which `apexctl status`
 shows. The reader then behaves as it does on stock Fedora (enrollment may fail with a
-protocol error) until the series is fixed. A red exit 1 also leaves the image on stock
-libfprint; the difference is that it points at the pipeline, not at the patches.
+protocol error) until the series is fixed. Exit 1 stops the image build instead,
+because it points at the pipeline, not at the patches.
 
 ## When upstream merges MR !655
 
-The upstream canary watches the MR and Fedora's builds:
+No job watches the MR: GitHub runs only `ci.yml`. Check it and Fedora's builds by hand:
 
 ```bash
 curl -s https://gitlab.freedesktop.org/api/v4/projects/libfprint%2Flibfprint/merge_requests/655 | jq -r '.state, .merged_at'
@@ -201,8 +205,9 @@ koji latest-build f45 libfprint
 3. Remove 0001 from `series` and delete the file. Then look at every remaining patch:
    0002 bounds the retry that 0001 introduced; if upstream bounds it too, drop 0002;
    otherwise rebase it on upstream's names and keep it.
-4. If `series` is now empty, retire the rebuild: disable `libfprint.yml`, remove the
-   local libfprint package and the `excludepkgs=libfprint` guard from the compose, and
-   drop `fingerprint` from the degraded logic.
+4. If `series` is now empty, retire the rebuild: remove the libfprint step from
+   `tools/builder-vm/build-image.sh`, remove the local libfprint package and the
+   `excludepkgs=libfprint` guard from the compose, and drop `fingerprint` from the
+   degraded logic.
 5. Before merging, run the fingerprint acceptance test on the laptop with the stock (or
    reduced) build.

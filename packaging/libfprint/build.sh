@@ -3,8 +3,9 @@
 #
 # Rebuild the libfprint SRPM that Fedora ships, with the Apex patches listed in
 # packaging/libfprint/series (ADR 0006). Runs as root inside
-# registry.fedoraproject.org/fedora:45 (libfprint.yml). The flow, the series format and
-# the exit codes are described in packaging/libfprint/README.md.
+# registry.fedoraproject.org/fedora:45, in the builder VM (.github/scripts/libfprint.sh
+# build). The flow, the series format and the exit codes are described in
+# packaging/libfprint/README.md.
 #
 # Usage: build.sh [build|key]
 #   build (default)  rebuild; RPMs, manifest.txt and key.txt go to OUT_DIR
@@ -29,8 +30,8 @@
 #
 # Exit status: 0 built; 1 error (nothing usable was produced: investigate);
 # 2 usage or configuration error; 3 degraded (a patch no longer applies or the patched
-# build or its elan test failed: ship Fedora's stock libfprint, label the image
-# degraded=fingerprint and open an issue; OUT_DIR/degraded.txt holds the reason).
+# build or its elan test failed: ship Fedora's stock libfprint and label the image
+# degraded=fingerprint; OUT_DIR/degraded.txt holds the reason).
 
 set -euo pipefail
 
