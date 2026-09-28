@@ -100,8 +100,6 @@ if [[ $MODE == build ]]; then
 fi
 
 # --- series -----------------------------------------------------------------------
-# One patch file name per line, relative to $PATCH_DIR; '#' starts a comment. 01xx
-# patches are carried in the tree but disabled, so the series may not name them.
 [[ -f $SERIES ]] || usage_error "series file $SERIES not found"
 PATCHES=()
 while IFS= read -r line || [[ -n $line ]]; do
@@ -123,12 +121,9 @@ done <"$SERIES"
 	usage_error "series enables no patch; drop the libfprint job instead (README.md)"
 
 # --- repositories -----------------------------------------------------------------
-# Exactly the repositories the image compose resolves from (ARCHITECTURE section 3),
-# so the rebuilt SRPM is the version the compose would otherwise install: fedora and
-# updates, plus updates-testing only while GA_REACHED=0 AND the allowlist has entries,
-# restricted to them (includepkgs). An empty allowlist means no updates-testing at all,
-# as in the Containerfile, which then generates no apex-gnome51 stanza; the pre-GA
-# fedora:45 image enables all of updates-testing, so the defaults are never used.
+# Exactly the repositories the image compose resolves from, so the rebuilt SRPM is the
+# version the compose would otherwise install. The pre-GA fedora:45 image enables all of
+# updates-testing, so the defaults are never used.
 FEDORA=$(rpm -E '%fedora')
 ARCH=$(rpm -E '%_arch')
 [[ $FEDORA =~ ^[0-9]+$ ]] || die "not a Fedora system (rpm -E %fedora = '$FEDORA')"
@@ -263,8 +258,6 @@ got=$(spec_release "$APEX_DIST")
 [[ $got == "$STOCK_VERSION-$APEX_RELEASE" ]] ||
 	die "spec gives $got with dist $APEX_DIST, expected $STOCK_VERSION-$APEX_RELEASE"
 
-# rpm's own comparison (rpm.vercmp, i.e. rpmvercmp on EVR strings); first a sanity
-# check of the comparator itself, then the real pair.
 vercmp() { rpm -E "%{lua: print(rpm.vercmp('$1', '$2'))}"; }
 [[ $(vercmp 1-1.fc45.apex1 1-1.fc45) == 1 && $(vercmp 1-2.fc45 1-1.fc45.apex1) == 1 ]] ||
 	die "rpm.vercmp does not order dist suffixes as expected"
