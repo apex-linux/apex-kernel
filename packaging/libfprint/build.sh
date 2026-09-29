@@ -1,44 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Rebuild the libfprint SRPM that Fedora ships, with the Apex patches listed in
-# packaging/libfprint/series (ADR 0006). Runs as root inside
-# registry.fedoraproject.org/fedora:45, in the builder VM (.github/scripts/libfprint.sh
-# build). The flow, the series format and the exit codes are described in
-# packaging/libfprint/README.md.
-#
-# Usage: build.sh [build|key]
-#   build (default)  rebuild; RPMs, manifest.txt and key.txt go to OUT_DIR
-#   key              print the cache key (Fedora NVR + hash of the enabled patches,
-#                    this script and the repository options)
-#
-# Environment:
-#   OUT_DIR              required for build: empty or missing output directory
-#   GA_REACHED           required: 1 once Fedora is GA, 0 before (adds updates-testing,
-#                        restricted to TESTING_INCLUDEPKGS, when that is not empty)
-#   SERIES               default packaging/libfprint/series (relative: to the repo root)
-#   TESTING_INCLUDEPKGS  the compose's updates-testing allowlist (comma-separated
-#                        includepkgs); only used when GA_REACHED=0. Empty: no
-#                        updates-testing at all
-#   APEX_SUFFIX          appended to %dist, default .apex1
-#   RUN_TESTS            1 (default): run the elan driver replay tests; 0: skip them
-#   KEEP_DEBUGINFO       1: also copy -debuginfo/-debugsource RPMs (default 0)
-#   FEDORA_KEY_FPR       expected fingerprint of the Fedora release key; built in for 45
-#   FEDORA_KEY_DIR       where the release key file is (default /usr/share/pki/rpm-gpg);
-#                        the fingerprint check applies wherever it is
-#   WORK_DIR             scratch directory (default: a new mktemp -d)
-#
-# Exit status: 0 built; 1 error (nothing usable was produced: investigate);
-# 2 usage or configuration error; 3 degraded (a patch no longer applies or the patched
-# build or its elan test failed: ship Fedora's stock libfprint and label the image
-# degraded=fingerprint; OUT_DIR/degraded.txt holds the reason).
 
 set -euo pipefail
 
 readonly EXIT_ERROR=1 EXIT_USAGE=2 EXIT_DEGRADED=3
-# Fedora release keys, checked against the file shipped in the builder image before it
-# is imported. Source: https://fedoraproject.org/security/ and fedora-repos dist-git
-# (RPM-GPG-KEY-fedora-45-primary), both read on 2026-09-24.
+# From https://fedoraproject.org/security/ and fedora-repos dist-git, both read on 2026-09-24.
 readonly FEDORA_45_KEY_FPR=4F50A6114CD5C6976A7F1179655A4B02F577861E
 
 SCRIPT_PATH=$(readlink -f -- "${BASH_SOURCE[0]}")
@@ -51,7 +17,42 @@ warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit "$EXIT_ERROR"; }
 usage_error() { printf 'usage error: %s\n' "$*" >&2; exit "$EXIT_USAGE"; }
 
-# degrade REASON [LOGFILE]: record why the patched build cannot ship and exit 3.
+usage() {
+	cat <<'EOF'
+Rebuild the libfprint SRPM that Fedora ships, with the Apex patches listed in
+packaging/libfprint/series (ADR 0006). Runs as root inside
+registry.fedoraproject.org/fedora:45, in the builder VM (.github/scripts/libfprint.sh
+build). The flow, the series format and the exit codes are described in
+packaging/libfprint/README.md.
+
+Usage: build.sh [build|key]
+  build (default)  rebuild; RPMs, manifest.txt and key.txt go to OUT_DIR
+  key              print the cache key (Fedora NVR + hash of the enabled patches,
+                   this script and the repository options)
+
+Environment:
+  OUT_DIR              required for build: empty or missing output directory
+  GA_REACHED           required: 1 once Fedora is GA, 0 before (adds updates-testing,
+                       restricted to TESTING_INCLUDEPKGS, when that is not empty)
+  SERIES               default packaging/libfprint/series (relative: to the repo root)
+  TESTING_INCLUDEPKGS  the compose's updates-testing allowlist (comma-separated
+                       includepkgs); only used when GA_REACHED=0. Empty: no
+                       updates-testing at all
+  APEX_SUFFIX          appended to %dist, default .apex1
+  RUN_TESTS            1 (default): run the elan driver replay tests; 0: skip them
+  KEEP_DEBUGINFO       1: also copy -debuginfo/-debugsource RPMs (default 0)
+  FEDORA_KEY_FPR       expected fingerprint of the Fedora release key; built in for 45
+  FEDORA_KEY_DIR       where the release key file is (default /usr/share/pki/rpm-gpg);
+                       the fingerprint check applies wherever it is
+  WORK_DIR             scratch directory (default: a new mktemp -d)
+
+Exit status: 0 built; 1 error (nothing usable was produced: investigate);
+2 usage or configuration error; 3 degraded (a patch no longer applies or the patched
+build or its elan test failed: ship Fedora's stock libfprint and label the image
+degraded=fingerprint; OUT_DIR/degraded.txt holds the reason).
+EOF
+}
+
 degrade() {
 	local reason=$1 logfile=${2:-}
 	{
@@ -75,11 +76,13 @@ MODE=${1:-build}
 case $MODE in
 build | key) ;;
 -h | --help)
-	# Print the header comment (everything up to the first non-comment line).
-	awk 'NR > 2 && /^#/ { sub(/^# ?/, ""); print; next } NR > 2 { exit }' "$SCRIPT_PATH"
+	usage
 	exit 0
 	;;
-*) usage_error "unknown mode '$MODE' (build|key)" ;;
+*)
+	usage >&2
+	usage_error "unknown mode '$MODE' (build|key)"
+	;;
 esac
 
 [[ ${GA_REACHED:-} == 0 || ${GA_REACHED:-} == 1 ]] ||
@@ -99,7 +102,6 @@ if [[ $MODE == build ]]; then
 	[[ -z $(ls -A -- "$OUT_DIR") ]] || usage_error "OUT_DIR $OUT_DIR is not empty"
 fi
 
-# --- series -----------------------------------------------------------------------
 [[ -f $SERIES ]] || usage_error "series file $SERIES not found"
 PATCHES=()
 while IFS= read -r line || [[ -n $line ]]; do
@@ -120,10 +122,7 @@ done <"$SERIES"
 ((${#PATCHES[@]} > 0)) ||
 	usage_error "series enables no patch; drop the libfprint job instead (README.md)"
 
-# --- repositories -----------------------------------------------------------------
-# Exactly the repositories the image compose resolves from, so the rebuilt SRPM is the
-# version the compose would otherwise install. The pre-GA fedora:45 image enables all of
-# updates-testing, so the defaults are never used.
+# The compose's repositories, never the defaults: pre-GA fedora:45 enables all of updates-testing.
 FEDORA=$(rpm -E '%fedora')
 ARCH=$(rpm -E '%_arch')
 [[ $FEDORA =~ ^[0-9]+$ ]] || die "not a Fedora system (rpm -E %fedora = '$FEDORA')"
@@ -139,9 +138,7 @@ elif [[ $GA_REACHED == 0 ]]; then
 fi
 dnf_bin() { dnf5 -y -q "${BIN_REPOS[@]}" "${SETOPTS[@]}" "$@"; }
 
-# The series hash covers the patch contents, the suffix, this script and the
-# repository options (they decide the build dependencies), so any change that alters
-# the output also changes the cache key.
+# The repository options are hashed because they decide the build dependencies.
 SERIES_SHA256=$(
 	{
 		printf 'suffix %s\n' "$APEX_SUFFIX"
@@ -179,9 +176,7 @@ log "Work directory: $WORK_DIR"
 log "Installing build tools"
 dnf_bin install rpm-build dnf5-plugins git-core cpio /usr/bin/gpg >/dev/null
 
-# --- SRPM download and signature ----------------------------------------------------
-# dnf checks the SRPM against the metalink-anchored metadata but not its OpenPGP
-# signature, so verify it here against the pinned Fedora key before using it.
+# dnf checks the SRPM against the metadata but not its OpenPGP signature: verify it here.
 log "Downloading $STOCK_SOURCERPM"
 stock_spec=libfprint-$STOCK_VERSION-$STOCK_RELEASE.$ARCH
 [[ $STOCK_EPOCH == 0 ]] || stock_spec=libfprint-$STOCK_EPOCH:$STOCK_VERSION-$STOCK_RELEASE.$ARCH
@@ -198,8 +193,7 @@ if [[ -z $expected_fpr && $FEDORA == 45 ]]; then
 fi
 [[ -n $expected_fpr ]] || usage_error "set FEDORA_KEY_FPR for Fedora $FEDORA"
 gnupg_home=$WORK_DIR/gnupg
-# chmod separately: with -p, mkdir -m applies only to the last directory, and a
-# pre-existing one would keep its mode.
+# mkdir -m would leave a pre-existing directory's mode alone, so chmod separately.
 mkdir -p -- "$gnupg_home"
 chmod 0700 -- "$gnupg_home"
 key_fpr=$(gpg --homedir "$gnupg_home" --batch --show-keys --with-colons -- "$key_file" |
@@ -208,11 +202,8 @@ key_fpr=$(gpg --homedir "$gnupg_home" --batch --show-keys --with-colons -- "$key
 	die "$key_file has fingerprint '$key_fpr', expected $expected_fpr"
 rpmkeys --import "$key_file"
 
-# Both the summary and every signature line must be OK, and one signature must be
-# made by the Fedora key (its key ID is the tail of the fingerprint). With -v, rpm
-# prints one line per digest or signature and no summary; signature lines read
-# "Header V4 RSA/SHA256 Signature, key ID f577861e: OK" (rpm 4) or "Header OpenPGP V4
-# RSA/SHA256 Signature, key fingerprint: 4f50...861e: OK" (rpm 6, lib/rpmvs.cc).
+# rpm 4 prints "Signature, key ID f577861e: OK", rpm 6 "Signature, key fingerprint:
+# 4f50...861e: OK" (lib/rpmvs.cc); the key ID is the fingerprint's tail.
 checksig=$(rpmkeys --checksig -- "$SRPM" 2>&1) || die "rpmkeys -K failed: $checksig"
 printf '%s\n' "$checksig" >&2
 [[ $checksig == *"signatures OK"* ]] || die "SRPM signatures are not OK: $checksig"
@@ -229,17 +220,13 @@ done <<<"$checksig_v"
 ((fedora_signed)) || die "no signature by the Fedora $FEDORA key (${key_id}):"$'\n'"$checksig_v"
 log "SRPM signed by the Fedora $FEDORA key: OK"
 
-# --- unpack and NVR checks ----------------------------------------------------------
 (cd -- "$TOP/SOURCES" && rpm2cpio "$SRPM" | cpio -idm --quiet --no-absolute-filenames)
 specs=("$TOP"/SOURCES/*.spec)
 [[ ${#specs[@]} -eq 1 && -f ${specs[0]} ]] || die "SRPM holds ${#specs[@]} spec files"
 SPEC=$TOP/SPECS/libfprint.spec
 mv -- "${specs[0]}" "$SPEC"
 
-# Fedora's spec says Release: %autorelease; Koji's SRPM carries the rpmautospec
-# preamble that expands it to the real release number followed by %{?dist}. Prove it:
-# with the stock dist the spec must give the stock release, and with the Apex dist it
-# must give the stock release plus the suffix (1.fc45 -> 1.fc45.apex1).
+# Koji's rpmautospec preamble expands %autorelease to the release plus %{?dist}; prove it.
 BASE_DIST=$(rpm -E '%{?dist}')
 [[ $BASE_DIST == ".fc$FEDORA" ]] || die "unexpected %dist '$BASE_DIST'"
 [[ $STOCK_RELEASE == *"$BASE_DIST" ]] ||
@@ -270,12 +257,10 @@ fi
 [[ $(vercmp "$apex_evr" "$stock_evr") == 1 ]] || die "$apex_evr does not sort above $stock_evr"
 log "NVR: libfprint-$STOCK_VERSION-$APEX_RELEASE sorts above $STOCK_NVR"
 
-# --- build dependencies and pristine %prep -------------------------------------------
 log "Installing build dependencies"
 dnf_bin builddep "$SRPM" >/dev/null
 
-# srcdir: the unpacked source tree under BUILD. rpm >= 4.20 nests it one level deeper
-# (BUILD/NAME-VERSION-build/SRC); the shallowest meson.build is the project root.
+# rpm >= 4.20 nests the tree one level deeper (BUILD/NAME-VERSION-build/SRC).
 srcdir() {
 	local found
 	found=$(find "$TOP/BUILD" -mindepth 2 -maxdepth 3 -name meson.build -printf '%d %h\n' |
@@ -295,7 +280,6 @@ rpmbuild_in -bp "$SPEC" >"$WORK_DIR/prep-stock.log" 2>&1 || {
 stock_src=$(srcdir) || die "no source tree under $TOP/BUILD after %prep"
 cp -a -- "$stock_src" "$WORK_DIR/pristine"
 
-# --- patch the spec -----------------------------------------------------------------
 grep -Eq '^%(autosetup|autopatch)([[:space:]]|$)' "$SPEC" ||
 	degrade "Fedora's spec no longer uses %autosetup/%autopatch; Patch lines would be ignored"
 : >"$WORK_DIR/patch-lines"
@@ -320,8 +304,6 @@ log "Applying the series (%prep)"
 rpmbuild_in -bp "$SPEC" >"$WORK_DIR/prep-apex.log" 2>&1 ||
 	degrade "a patch in the series no longer applies to $STOCK_NVR" "$WORK_DIR/prep-apex.log"
 
-# Prove the tree is exactly pristine + series: reverting the patches in reverse order
-# must give back the unpatched tree.
 patched_src=$(srcdir) || die "no source tree under $TOP/BUILD after patched %prep"
 cp -a -- "$patched_src" "$WORK_DIR/reverted"
 for ((i = ${#PATCHES[@]} - 1; i >= 0; i--)); do
@@ -332,18 +314,11 @@ diff -r -q --exclude=.git -- "$WORK_DIR/pristine" "$WORK_DIR/reverted" >"$WORK_D
 	degrade "the %prep tree differs from Fedora's source plus the series" "$WORK_DIR/revert.diff"
 log "Series applied exactly"
 
-# --- build --------------------------------------------------------------------------
-# Fedora's spec has no %check today (its test run needs a pygobject fix), so no
-# --nocheck: if Fedora restores %check it runs here too. --noclean keeps the build
-# tree for the elan replay tests below.
+# No --nocheck, so a %check Fedora restores runs here; --noclean keeps the tree for the tests.
 log "Building libfprint-$STOCK_VERSION-$APEX_RELEASE"
 rpmbuild_in -bb --noclean "$SPEC" >"$WORK_DIR/build.log" 2>&1 ||
 	degrade "the patched libfprint does not build" "$WORK_DIR/build.log"
 
-# --- tests --------------------------------------------------------------------------
-# The umockdev replay tests need no hardware. The elan tests replay a recorded capture
-# through the patched driver; a control test of an untouched driver tells a broken
-# test harness (inconclusive, warn) from a driver regression (degrade).
 TESTS=skipped
 if [[ $RUN_TESTS == 1 ]]; then
 	# %meson builds in %{_vpath_builddir} (redhat-linux-build) inside the source tree.
@@ -355,8 +330,7 @@ if [[ $RUN_TESTS == 1 ]]; then
 		TESTS=unavailable
 		warn "no meson build directory under $TOP/BUILD; tests not run"
 	else
-		# `meson test --list` prints "suites - project:name" (meson 1.x, e.g.
-		# "drivers - libfprint:elan"), "project:suites / name" (older) or "name".
+		# meson test --list: "suites - project:name" (1.x), "project:suites / name" or "name".
 		mapfile -t all_tests < <(meson test -C "$build_dir" --list 2>"$WORK_DIR/tests-list.err" |
 			sed -e 's/[[:space:]]*$//' -e 's|.* / ||' -e 's|.* - [^:]*:||')
 		elan_tests=()
@@ -395,7 +369,6 @@ if [[ $RUN_TESTS == 1 ]]; then
 fi
 log "Tests: $TESTS"
 
-# --- outputs ------------------------------------------------------------------------
 mapfile -t rpms < <(find "$TOP/RPMS" -type f -name '*.rpm' | sort)
 ((${#rpms[@]} > 0)) || die "rpmbuild produced no RPMs"
 nevra() { rpm -qp --queryformat='%{name}-%{epochnum}:%{version}-%{release}.%{arch}' -- "$1"; }

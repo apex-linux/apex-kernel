@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Run packaging/libfprint/build.sh with the image compose's repository switches, inside
-# registry.fedoraproject.org/fedora:45 (build: as root).
-#
-#   libfprint.sh key            print the cache key as an OCI tag
-#   libfprint.sh build OUTDIR   rebuild; exit 0 built, 3 degraded, anything else failed
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+    cat >&2 <<'EOF'
+
+Run packaging/libfprint/build.sh with the image compose's repository switches, inside
+registry.fedoraproject.org/fedora:45 (build: as root).
+
+  libfprint.sh key            print the cache key as an OCI tag
+  libfprint.sh build OUTDIR   rebuild; exit 0 built, 3 degraded, anything else failed
+EOF
+    exit 2
+}
 
 readonly BUILD_SH="$APEX_ROOT/packaging/libfprint/build.sh"
 readonly EXIT_DEGRADED=3

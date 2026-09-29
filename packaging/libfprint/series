@@ -1,7 +1,4 @@
-# Applied to Fedora's libfprint in this order (format: README.md). Only 00xx patches may
-# be listed; 01xx ones are carried but disabled until a debug log shows their trigger
-# (patches/README.md).
-# A patch that stops applying degrades the image to Fedora's libfprint: check whether
-# upstream merged or changed the fix before rebasing it.
+# Application order; only 00xx patches may be listed, 01xx stay disabled (patches/README.md).
+# A patch that stops applying degrades to Fedora's libfprint: check upstream before rebasing.
 0001-elan-Retry-transient-pre-scan-status-on-04f3-0c6e.patch
 0002-elan-Bound-transient-retries-with-lift-semantics.patch
