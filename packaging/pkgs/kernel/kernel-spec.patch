@@ -1,0 +1,17 @@
+The pair job's module key (ADR 0015): the kernel build takes the key that module-key.sh
+made on a tmpfs, builds its certificate in and signs every module with it. The pair job
+applies this with patch --fuzz=0 -p1 in SPECS/ and passes
+--define 'apex_module_sig_key /run/apex-modkey/signing_key.pem'.
+
+--- a/kernel-cachyos.spec
++++ b/kernel-cachyos.spec
+@@ -184,6 +184,9 @@
+         scripts/config -e LTO_CLANG_THIN
+     %endif
+ 
++    %{!?apex_module_sig_key:%{error:apex_module_sig_key is not defined: the pair job passes its module key}}
++    scripts/config --set-str MODULE_SIG_KEY %{apex_module_sig_key}
++
+     %if %{_build_minimal}
+         %make_build LSMOD=%{SOURCE2} localmodconfig
+     %else
