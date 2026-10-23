@@ -35,6 +35,8 @@ check_false() {
     if (set +e; "$@") >/dev/null 2>&1; then flunk "$name: expected failure"; else pass; fi
 }
 
+rc_of() { local rc=0; "$@" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+
 # --- digests and tags ------------------------------------------------------------------
 check "tag unchanged" "libfprint-1.94.10-1.fc45-s0123456789ab" "$(oci_tag libfprint-1.94.10-1.fc45-s0123456789ab)"
 check "tag sanitised" "libfprint-1.94.10_rc1-1.fc45" "$(oci_tag 'libfprint-1.94.10~rc1-1.fc45')"
@@ -75,8 +77,12 @@ check "libfprint key names the stock NVR" libfprint-1.94.100-1.fc45-s "${k_empty
 check_false "libfprint key changes with the repository options" test "$k_empty" = "$k_list"
 check "libfprint key is the same with no updates-testing either way" "$k_empty" "$k_ga"
 
-k_default=$(PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" "$APEX_ROOT/.github/scripts/libfprint.sh" key 2>/dev/null)
-check "libfprint.sh defaults to Fedora 45 after GA, with no updates-testing" "$(oci_tag "$k_ga")" "$k_default"
+k_passed=$(PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" GA_REACHED=1 "$APEX_ROOT/.github/scripts/libfprint.sh" key 2>/dev/null)
+check "libfprint.sh key passes GA_REACHED to build.sh" "$(oci_tag "$k_ga")" "$k_passed"
+check "libfprint.sh refuses to guess GA_REACHED" 1 \
+    "$(PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" GA_REACHED='' rc_of "$APEX_ROOT/.github/scripts/libfprint.sh" key)"
+check "libfprint.sh refuses a GA_REACHED other than 0 or 1" 1 \
+    "$(PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" GA_REACHED=yes rc_of "$APEX_ROOT/.github/scripts/libfprint.sh" key)"
 
 # --- .gitignore: biometric data never gets tracked -------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG var/lib/fprint/u/1; do
