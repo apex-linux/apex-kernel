@@ -2,8 +2,8 @@
 
 The CachyOS kernel (GCC build) rebuilt from the COPR's signed SRPM, and negativo17's
 `nvidia-kmod` built for exactly that kernel in the same job, both signed with one key
-that lives only for that job ([ADR 0015](../../../docs/adr/0015-cachyos-kernel-and-nvidia.md),
-[ARCHITECTURE 4.2](../../../docs/ARCHITECTURE.md#42-kernel-and-nvidia-lane-s1c)). The lane
+that lives only for that job ([ADR 0015](https://github.com/apex-linux/apex/blob/main/docs/adr/0015-cachyos-kernel-and-nvidia.md),
+[ARCHITECTURE 4.2](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#42-kernel-and-nvidia-lane-s1c)). The lane
 that runs the pair job arrives in roadmap S1c. Until then this directory holds what the
 K1 spike proved and the pieces S1c reuses. There is no `pkg.env`, so neither `apex-lane`
 nor `image.sh` sees a kernel family yet.

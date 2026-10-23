@@ -7,11 +7,14 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 
-Run packaging/libfprint/build.sh with the image compose's repository switches, inside
-registry.fedoraproject.org/fedora:45 (build: as root).
+Run packaging/libfprint/build.sh inside registry.fedoraproject.org/fedora:45 (build: as
+root), with the image compose's repository switches.
 
   libfprint.sh key            print the cache key as an OCI tag
   libfprint.sh build OUTDIR   rebuild; exit 0 built, 3 degraded, anything else failed
+
+Environment: GA_REACHED [1] and TESTING_INCLUDEPKGS [empty], which apex-image passes
+from its Containerfile and updates-testing allowlist; Fedora 45 reached GA on 2026-10-20.
 EOF
     exit 2
 }
@@ -20,8 +23,8 @@ readonly BUILD_SH="$APEX_ROOT/packaging/libfprint/build.sh"
 readonly EXIT_DEGRADED=3
 
 build_env() {
-    GA_REACHED=$(ga_reached)
-    TESTING_INCLUDEPKGS=$(testing_includepkgs)
+    GA_REACHED=${GA_REACHED:-1}
+    TESTING_INCLUDEPKGS=${TESTING_INCLUDEPKGS:-}
     export GA_REACHED TESTING_INCLUDEPKGS
     log "GA_REACHED=$GA_REACHED; updates-testing allowlist: ${TESTING_INCLUDEPKGS:-<empty>}"
 }

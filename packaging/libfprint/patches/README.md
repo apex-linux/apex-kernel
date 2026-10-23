@@ -1,7 +1,7 @@
 # libfprint elan patches
 
 These patches change libfprint's `elan` driver for the ELAN `04f3:0c6e` reader in this
-laptop's power key. [ADR 0006](../../../docs/adr/0006-fingerprint-libfprint-rebuild.md)
+laptop's power key. [ADR 0006](https://github.com/apex-linux/apex/blob/main/docs/adr/0006-fingerprint-libfprint-rebuild.md)
 covers the decision and [../README.md](../README.md) covers the rebuild. This file
 describes what each patch does to the capture state machine and which log lines show it.
 
@@ -206,7 +206,7 @@ How to read a log from this laptop:
   `SSM CALIBRATE_NUM_STATES failed in state 0 with error: transfer timed out`.
 
 The hardware test is in
-[docs/hardware/FINGERPRINT.md](../../../docs/hardware/FINGERPRINT.md). It covers the
+[docs/hardware/FINGERPRINT.md](https://github.com/apex-linux/apex/blob/main/docs/hardware/FINGERPRINT.md). It covers the
 safe capture log, the lock-screen soak and what may be shared. `G_MESSAGES_DEBUG`
 output contains no image data. `FP_DEBUG_TRANSFER=1` dumps raw frames, which are
 biometric data, so it never goes into a shared log.

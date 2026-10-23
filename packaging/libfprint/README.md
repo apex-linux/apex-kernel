@@ -3,8 +3,8 @@
 Fedora's libfprint rejects every pre-scan status of the ELAN `04f3:0c6e` reader other
 than 0x55 as a protocol error. The upstream fix, MR !655, is not merged. Until it is,
 Apex rebuilds **the libfprint SRPM that Fedora ships** with a short list of patches
-([ADR 0006](../../docs/adr/0006-fingerprint-libfprint-rebuild.md),
-[ARCHITECTURE 6.3](../../docs/ARCHITECTURE.md#63-fingerprint-elan-04f30c6e)).
+([ADR 0006](https://github.com/apex-linux/apex/blob/main/docs/adr/0006-fingerprint-libfprint-rebuild.md),
+[ARCHITECTURE 6.3](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#63-fingerprint-elan-04f30c6e)).
 
 | File | Role |
 |---|---|
@@ -96,7 +96,7 @@ GA_REACHED=0 OUT_DIR=/out packaging/libfprint/build.sh
 | `WORK_DIR` | scratch directory, default a new `mktemp -d` |
 
 By hand, run the same command in the Fedora 45 builder VM
-([tools/builder-vm](../../tools/builder-vm/README.md)), for example
+([tools/builder-vm](https://github.com/apex-linux/apex-image/blob/main/tools/builder-vm/README.md)), for example
 `podman run --rm -v "$PWD:/src:Z" -w /src registry.fedoraproject.org/fedora:45 env GA_REACHED=0 OUT_DIR=/src/target/libfprint packaging/libfprint/build.sh`.
 
 ## The `series` file

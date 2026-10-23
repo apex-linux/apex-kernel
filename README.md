@@ -1,73 +1,31 @@
-# Apex
+# apex-kernel
 
-Apex is a personal, image-based Linux distribution for exactly one laptop: the ASUS
-Vivobook Pro 14X OLED **M7400QC** (Ryzen 5 5600H, RTX 3050 Mobile, Realtek ALC294,
-ELAN fingerprint reader, Samsung 2880×1800 OLED at 90 Hz).
+The kernel and libfprint rebuilds of [Apex](https://github.com/apex-linux/apex) for the
+ASUS Vivobook Pro 14X OLED (M7400QC).
 
-- **Base:** Fedora 45 delivered with bootc. Updates are atomic and signed, the laptop
-  never reboots behind your back, and a bad update rolls back after a counted number of
-  failed boots.
-- **Desktop:** GNOME 51 on Wayland only, with GTK4/libadwaita apps. Legacy components
-  are removed and kept out by a build gate.
-- **Display:** pixel-exact by default (integer scale 2 on the built-in panel).
-- **Hardware:** fixes for this machine: ALC294 speakers, the ELAN `04f3:0c6e` reader,
-  firmware, dGPU power gating and the battery charge limit. Each fix is meant to go
-  upstream.
-- **Components:** everything Apex writes itself is Rust.
+- **libfprint** (`packaging/libfprint/`): Fedora's libfprint with the ELAN `04f3:0c6e`
+  patches, rebuilt from Fedora's signed SRPM. A build that cannot ship leaves the image
+  on Fedora's stock libfprint, labelled `degraded=fingerprint`
+  ([ADR 0006](https://github.com/apex-linux/apex/blob/main/docs/adr/0006-fingerprint-libfprint-rebuild.md)).
+- **Kernel** (`packaging/pkgs/kernel/`): the CachyOS kernel and NVIDIA's open modules,
+  built as one pair and signed with a per-build key
+  ([ADR 0015](https://github.com/apex-linux/apex/blob/main/docs/adr/0015-cachyos-kernel-and-nvidia.md)).
+  The K1 spike's results are here; the lane that ships the pair arrives in roadmap S1c.
 
-> Status: **S1a done; step M in progress**: the design reset and the move to the
-> `apex-linux` GitHub organisation. Nothing here is ready to install yet. See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
-
-## Read first
-
-- [Architecture](docs/ARCHITECTURE.md): how the pieces fit, and why.
-- [Design direction](docs/DESIGN.md): the look, the product rules and the settings
-  contract.
-- [Decisions](docs/adr/): one ADR per non-obvious choice.
-- [M1 contract](docs/specs/M1-IMPLEMENTATION.md): names, paths and formats shared
-  between components.
-- [Threat model](docs/THREAT-MODEL.md).
-- Hardware procedures and acceptance tests: [docs/hardware/](docs/hardware/).
-- [Install](docs/INSTALL.md) and [recovery](docs/RECOVERY.md) runbooks.
-- [Contributing](docs/CONTRIBUTING.md): code explains itself, and the comment guard
-  that holds every change to it.
-
-## Layout
-
-```
-crates/     Rust: apex-bootc, apex-update, apex-boot, apex-dbus, apex-updated, apexctl,
-            apex-lane, apex-lint
-desktop/    the Apex layer in gnome-shell, the apex-desktop schema, units and wallpapers
-hardware/   machine profile (single source of truth) and rendered drop-ins
-image/      Containerfile, package lists, rootfs overlay, image checks
-packaging/  RPM spec, libfprint patch series, the kernel lane's patches (S1c)
-.github/    ci.yml, the only workflow; the scripts of ci.yml and the builder VM
-```
+[packaging/README.md](packaging/README.md) has the details.
+[apex-image](https://github.com/apex-linux/apex-image) pins this repository by commit
+and runs the builds in its builder VM pipeline.
 
 ## Development
 
-The development host needs only a Rust toolchain. `rust-toolchain.toml` pins the same
-version Fedora 45 ships.
-
 ```bash
-just check
+just check          # shellcheck and the script self-tests, as CI runs them
+just libfprint-key  # the libfprint cache key
+just libfprint      # print the root command that rebuilds libfprint in a fedora:45 container
 ```
-
-`just check` runs fmt, clippy, the tests and the comment guard
-([CONTRIBUTING](docs/CONTRIBUTING.md)) as ci.yml does.
-
-```bash
-just render
-```
-
-Packages and images build in a Fedora 45 builder VM
-([ARCHITECTURE §4](docs/ARCHITECTURE.md#4-build-and-publish)). GitHub runs only
-`ci.yml`, which checks the code on every pull request and every push to `main`.
-Hardware measurements need root and are run by hand. Nothing in this repository runs
-`sudo` for you.
 
 ## License
 
-GPL-3.0-or-later. Patches in `packaging/` carry the licenses of the projects they
-modify (GPL-2.0 for the kernel, LGPL-2.1-or-later for libfprint).
+The scripts are GPL-3.0-or-later (`LICENSE`). The kernel patches are GPL-2.0
+(`LICENSE.GPL-2.0`) and the libfprint patches LGPL-2.1-or-later (`LICENSE.LGPL-2.1`),
+the licences of the projects they modify.
