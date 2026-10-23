@@ -60,7 +60,7 @@ Apex rebuilds **the libfprint SRPM that Fedora ships** with a short list of patc
    `manifest.txt` and `key.txt`.
 
 `build.sh key` stops after step 2 and prints the cache key. It was the tag of
-`ghcr.io/sekirokenjii/apex-libfprint`; nothing publishes one now, so the builder VM
+`ghcr.io/apex-linux/apex-libfprint`; nothing publishes one now, so the builder VM
 always builds. The key looks like this:
 
 ```
@@ -184,7 +184,7 @@ retry path itself: that is the hardware acceptance test in `docs/hardware/`.
 
 Degrading never blocks OS updates (ADR 0006): the image build falls back to stock
 libfprint (it drops `excludepkgs=libfprint` and the local libfprint package) and sets
-the label `io.github.sekirokenjii.apex.degraded=fingerprint`, which `apexctl status`
+the label `io.github.apex-linux.apex.degraded=fingerprint`, which `apexctl status`
 shows. The reader then behaves as it does on stock Fedora (enrollment may fail with a
 protocol error) until the series is fixed. Exit 1 stops the image build instead,
 because it points at the pipeline, not at the patches.
