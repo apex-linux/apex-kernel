@@ -5,8 +5,8 @@ The CachyOS kernel (GCC build) rebuilt from the COPR's signed SRPM, and negativo
 that lives only for that job ([ADR 0015](https://github.com/apex-linux/apex/blob/main/docs/adr/0015-cachyos-kernel-and-nvidia.md),
 [ARCHITECTURE 4.2](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#42-kernel-and-nvidia-lane-s1c)). The lane
 that runs the pair job arrives in roadmap S1c. Until then this directory holds what the
-K1 spike proved and the pieces S1c reuses. There is no `pkg.env`, so neither `apex-lane`
-nor `image.sh` sees a kernel family yet.
+K1 spike proved, the pieces S1c reuses and S1c's pins as data. There is no `pkg.env`, so
+neither `apex-lane` nor `image.sh` sees a kernel family yet.
 
 | File | Role |
 |---|---|
@@ -16,13 +16,15 @@ nor `image.sh` sees a kernel family yet.
 | `check.sh` | the lane checks of a pair (the lane's `check.sh` contract, plus `MODULE_CERT`): `config-required.txt`, the certificate built into `vmlinuz`, the signer of every module, the NVIDIA signatures verified with `openssl cms`, `kernel-uname-r`, no private key in a payload |
 | `config-required.txt` | the config lines ADR 0015 relies on, compared verbatim |
 | `patches/` | the ALC294 quirk, out of any series (ADR 0015, section 8) |
+| `kernel.env` | the COPR, chroot, SRPM NEVRA and sha256, the COPR key, the CachyOS tag and its key; `KEY=VALUE`, never sourced, read by nothing yet |
+| `nvidia.env` | the `nvidia-kmod` SRPM and each userspace RPM with NEVRA and sha256, the negativo17 key; the same format |
 
 ## K1, 2026-10-02
 
 Steps 1 to 4 of the roadmap's K1 ran in the builder VM (8 vCPUs, 6 GiB, Fedora 45,
 `podman` as root, containers of `image/Containerfile`'s `REPOS_BASE`
 `fedora@sha256:1e13e11f…`, repositories `fedora` and `updates` only). Step 5, the same
-builds on Linux 7.3.0, waits for the COPR. Every number below comes from a saved
+builds on Linux 7.3.0, ran on 2026-10-24 ([below](#k1-step-5-2026-10-24)). Every number below comes from a saved
 command output; the commands and their outputs are in the logs of the spike and of its
 verification, kept outside the repository.
 
@@ -228,6 +230,105 @@ What the run cannot show, because the guest has no NVIDIA GPU: that the modules 
 the GA107, load the GSP firmware, bring up DRM/KMS and UVM, reach RTD3 and D3cold, and
 survive s2idle. Those are the laptop rows of `docs/hardware/ACCEPTANCE.md` (K3).
 
+## K1 step 5, 2026-10-24
+
+Steps 1 and 3 again, on Linux 7.3.0, in a cloud container instead of the builder VM:
+4 vCPUs, 15 GiB, Docker as root, `fedora:45` of the day
+(`fedora@sha256:322dd035…`, not `REPOS_BASE`), repositories `fedora` and `updates` only.
+Step 1's two rebuilds did not run: K1's rpmbuild tree peaked at 34.2 GB and the
+container had 29 GB free. The kernel build stays a builder-VM job. Every number below
+comes from a saved command output, kept outside the repository. `kernel.env` and
+`nvidia.env` pin exactly these inputs.
+
+### Inputs
+
+| Input | Value |
+|---|---|
+| Kernel SRPM | `kernel-cachyos-7.3.0-4.cachyos1.fc45.src.rpm`, COPR build 11199225, chroot `fedora-45-x86_64` (succeeded 2026-10-23 18:16 UTC, the whole build at 19:54), 263,558,722 bytes |
+| sha256 | `e6b57189499ce41b78255deadc86f38e318e24e895283b7e1f412a23de9cf49f`, equal to the chroot repodata |
+| Its sources | `cachyos-7.3.0-4.tar.gz` `022eb75c…`, `config` `81fb56fe…`, `0001-bore-cachy.patch` `0682dfd0…`, spec `0edf6e56…` |
+| Devel RPM | `kernel-cachyos-devel-7.3.0-4.cachyos1.fc45.x86_64.rpm`, 19,488,083 bytes, sha256 `f9c8539d…`, equal to the chroot repodata |
+| `rpmkeys -Kv` | both files: header and legacy RSA/SHA256 signatures OK against a keyring holding only the COPR key (same fingerprint, same URL); an empty keyring gives `NOKEY` and exit 1 |
+| CachyOS tag | `cachyos-7.3.0-4` (commit `6f1d9031…`, tagged 2026-10-23 13:14 UTC): `git verify-tag` gives `VALIDSIG` for `E8B9 AA39 F054 E30E 8290 D492 C3C4 8208 57F6 54FE` alone; its `git archive` and the SRPM's Source0, both uncompressed, are byte-identical (`9478fd17…`) |
+| kmod SRPM | `nvidia-kmod-3:615.78.08-1.fc45.src.rpm`, the newest (negativo17 still has 615.71.09-2), 25,855,682 bytes, sha256 `2a16e83c24605b0f3c436caacb133c7b1b7724b105ed7c970ddf1a6809668532`, equal to the repodata; RSA/SHA512 signature OK against the negativo17 key alone, refused by an empty keyring. The same two Anatase patches; its spec equals negativo17/nvidia-kmod `52070eb` |
+| Userspace (newest in `fedora-nvidia`, each signature OK, sha256 equal to the repodata) | `nvidia-driver`, `-common`, `-cuda`, `-cuda-libs`, `-libs`, `nvidia-kmod-common`, `nvidia-modprobe`, `nvidia-persistenced` 3:615.78.08-1; `nvidia-driver-selinux` 0.1-3 |
+
+What changed in the packaging:
+
+- The release now starts with the CachyOS tag number: `Release:
+  %{_cachyos_release}.cachyos1%{?dist}`, `_cachyos_release 4`. `uname -r` is
+  `7.3.0-4.cachyos1.fc45.x86_64`. The first 7.3.0 build (11177829, 2026-10-20) was still
+  `7.3.0-cachyos1`; rpm sorts `4.cachyos1` above it.
+- `kernel-spec.patch` applies to the new spec with `--fuzz=0` (offset −2 lines).
+- The COPR's chroot built the kernel at `-j32` in 16 minutes (7.2.8: 117 minutes at
+  `-j4`), with GCC 16.2.1-2.fc45.1 and dwarves 1.32.
+
+### The config
+
+`config-required.txt` against the SRPM's `config`, verbatim: 24 of its 29 lines match.
+The five that do not are the ones the spec's `%prep` sets, as in 7.2.8:
+
+| Line | The SRPM's `config` |
+|---|---|
+| `CONFIG_LSM="lockdown,yama,integrity,selinux,bpf,landlock"` | `CONFIG_LSM="landlock,lockdown,yama,integrity,bpf"` |
+| `CONFIG_IMA_ARCH_POLICY=y` | absent |
+| `CONFIG_SCHED_BORE=y` | `# CONFIG_SCHED_BORE is not set` |
+| `CONFIG_HZ=1000` | `CONFIG_HZ=300` |
+| `CONFIG_X86_64_VERSION=3` | `CONFIG_X86_64_VERSION=1` |
+
+The COPR's built config (the `.config` in `-devel`) holds all 29. As in 7.2.8:
+`CONFIG_RUST=y` in the source and gone from the build, no `NOVA_CORE` or `DRM_NOVA`,
+`LTO_NONE`, `CONFIG_CC_VERSION_TEXT` `gcc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)`,
+`MODULE_SIG_KEY="certs/signing_key.pem"`, `ZSWAP_DEFAULT_ON=y`, `DRM_NOUVEAU=m`.
+
+### The NVIDIA modules
+
+NVIDIA 615.78.08 (negativo17 `-1`) builds on 7.3.0-4.cachyos1 unmodified, through
+`kmod-build.sh` with the COPR's `-devel`. The GCC check passed (`CONFIG_GCC_VERSION`
+160201, the container's `gcc-16.2.1-2.fc45.1`). The kmod RPM is
+`kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-3:615.78.08-1.fc45`, 10,120,616 bytes; it
+requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
+`nvidia-kmod-common >= 3:615.78.08`, and holds the same five xz-compressed modules.
+
+- `modinfo`, all five: `vermagic: 7.3.0-4.cachyos1.fc45.x86_64 SMP preempt mod_unload`,
+  signer `Apex kernel 7.3.0-4.cachyos1.fc45.x86_64 k1s5`, `sig_key`
+  `33:FA:2B:57:36:6D:77:6B:50:7D:87:BD:68:60:9E:A7:67:72:A3:DD` (the serial of the
+  throwaway certificate), `sig_hashalgo: sha256`. After `shred`, only
+  `signing_key.x509` was left on the tmpfs.
+- `kmod-build.sh` (dnf, builddep and rpmbuild, no ccache): 6:19.94 wall at 282 % CPU,
+  `-j4`, peak RSS 288,756 kB. K1's cold kmod took 3:07 at `-j8` in the builder VM.
+- No errors. The warnings: 11,669 objtool lines "'naked' return found in
+  MITIGATION_RETHUNK build", all in `nvidia.o`, in the RM core that NVIDIA's own
+  makefile compiles; four `-Wformat` (`uvm_migrate_pageable.c:832-833`,
+  `uvm_processor_id_t` for `%d`) and three `-Wunused-but-set-variable`
+  (`nvkms-evo.c:370`, `nvt_edidext_861.c:1027` and `1029`); and "pahole version
+  differs", because `nvidia-kmod` does not BuildRequire dwarves, so the NVIDIA modules
+  carry no BTF.
+- Control: the same SRPM on the COPR's `kernel-cachyos-devel-7.2.11-cachyos1`
+  (signature OK) in the same kind of container gives the identical set: 11,669 objtool
+  lines, the same seven compiler warnings and the pahole line, in 5:35.06. Nothing is
+  new with 7.3; no API of the new major breaks the build.
+
+### A second source for the keys
+
+- **COPR key.** Fedora 45's `distribution-gpg-keys-copr-1.123-1.fc45`, installed from
+  `fedora` with dnf's signature check, ships `copr/copr-bieszczaders-kernel-cachyos.gpg`
+  byte-identical to the pubkey URL's file (sha256 `04d4284d…`). In
+  rpm-software-management/distribution-gpg-keys it arrived on 2023-01-30 ("update copr
+  keys", by a COPR maintainer) and never changed. Another channel, with a Fedora
+  signature, and in place since 2023; the origin is still COPR, whose team exports the keys.
+- **CachyOS tag key.** keys.openpgp.org and keyserver.ubuntu.com serve the same
+  fingerprint, uid `Peter Jung <admin@ptr1337.dev>`, the primary key valid until
+  2028-03-31 (its encryption subkey expired on 2026-09-24; tags are signed by the
+  primary). The key signs the tag above. GitHub's profile key endpoint is not reachable
+  from the container.
+- **negativo17 key.** Still none. keys.openpgp.org: 404 by fingerprint and by e-mail.
+  keyserver.ubuntu.com: 404 by fingerprint; by e-mail, two older keys of the same
+  person (`D495 00D3 43BB D8C2 98EC 0E79 7265 DCE4 0D61 C616`, RSA 3072, 2023, and a
+  2008 DSA key), neither of which certifies `0C5D…909B`. pgp.mit.edu: 503.
+  `distribution-gpg-keys` holds only the same person's COPR keys. The 50 newest commits
+  of negativo17/nvidia-kmod are unsigned, and it has no tags.
+
 ## What S1c must do
 
 - Poll the COPR per chroot. The builds of 7.2.5 to 7.2.8 are all `failed` overall (for
@@ -241,6 +342,12 @@ survive s2idle. Those are the laptop rows of `docs/hardware/ACCEPTANCE.md` (K3).
 - Mirror at first sight. Within the week after ADR 0015 was written, negativo17's
   `nvidia-driver` went from `-3` to `-5` and only `-4` and `-5` remain; the COPR's
   fedora-45 repodata kept 8 kernel builds, not 5.
+- Verify the tag of `kernel.env` with `git verify-tag` against `tag_key` alone, and
+  compare its uncompressed `git archive` with Source0; both held for 7.3.0-4.
+- Expect the tag number at the front of the release (`7.3.0-4.cachyos1`); the `.apexN`
+  suffix goes after it.
+- Install dwarves before the kmod build if the NVIDIA modules should carry BTF;
+  negativo17's spec does not ask for it.
 - Apply `kernel-spec.patch`. The compose needs no spec change; the ADR's other hunks
   (the `.apexN` release, `_disable_source_fetch 1`, the series, `%posttrans` reduced to
   `depmod`, `CC="ccache gcc"`) were not tested here. ccache works from `PATH` without one.
@@ -268,9 +375,10 @@ survive s2idle. Those are the laptop rows of `docs/hardware/ACCEPTANCE.md` (K3).
 
 | Risk | What K1 saw | Response |
 |---|---|---|
-| NVIDIA 615 does not build on 7.3 | builds on 7.2.8 with negativo17's two Anatase patches | K1 step 5 when the COPR ships 7.3.0 |
+| NVIDIA 615 does not build on 7.3 | 615.78.08-1 builds on 7.3.0-4.cachyos1 unmodified, with the same warnings as on 7.2.11 (step 5) | the kmod build in every bump report; a new major waits for the owner |
+| NVIDIA's RM core has returns objtool cannot patch | 11,669 "'naked' return found in MITIGATION_RETHUNK build" lines in `nvidia.o`, on 7.2.11 and 7.3.0 alike | upstream's; part of the K3 review of the AMD return-thunk mitigations |
 | The config arrives from an unpinned URL | between `cachyos1` and `cachyos2` nothing but the release changed | the bump report's config diff, as planned |
-| No second source for the two key fingerprints | not on the two keyservers tried; two third-party repositories (secureblue, margine-image) pin the same fingerprints, read from the same URLs before 2026-09-03: consistent over time, not an independent channel | check another source before the pins land |
+| No second source for the negativo17 fingerprint | the COPR key is in Fedora's signed `distribution-gpg-keys-copr` since 2023, the tag key on two keyservers (step 5); negativo17's is on no keyserver and in no signed git history | nothing reads `nvidia.env` yet; the owner decides before S1c's lane trusts its key |
 | The NVIDIA userspace was never composed | mirrored and signature-checked; the test image held only the kmod side | S1c composes it under the legacy gate |
 | The host runs short while the desktop VM runs | 982,572 kB available and 4.5 GiB of swap in use during the cold build | kernel jobs at night on AC, as planned; no bigger VM |
 | The GPU itself is untested | the guest has no NVIDIA device | ACCEPTANCE §4 on the laptop (K3) |
