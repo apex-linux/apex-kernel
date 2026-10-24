@@ -13,11 +13,45 @@ neither `apex-lane` nor `image.sh` sees a kernel family yet.
 | `kernel-spec.patch` | the one spec change the pair needs: `CONFIG_MODULE_SIG_KEY` names the job's key (`--define 'apex_module_sig_key PATH'`); the build stops without the define |
 | `module-key.sh` | `generate DIR CN`: an ECDSA P-384 key and its certificate on a tmpfs, the kernel's own certificate extensions; `shred DIR`: the private key goes, the DER certificate stays |
 | `kmod-build.sh` | in the container that built the kernel: installs its `kernel-cachyos-devel`, checks the GCC major, rebuilds the `nvidia-kmod` SRPM unmodified with `--define 'kernels <uname -r>'` and kmodtool's signing macros |
+| `pair.sh` | the pair job, run as root in one fresh `fedora:45` container: verifies every pinned input of the mirror, makes the key, builds the kernel (ccache when `CCACHE_DIR` is set) and the kmod, shreds the key, runs `check.sh`, writes `pair.lock`; [the contract below](#the-pair-job) |
+| `bump.sh` | `bump.sh check`: `point`, `major … waiting-for-owner EOL-in-Nd` or `none` from the COPR and kernel.org, then the newest negativo17 builds of the pinned NVIDIA branch; edits nothing |
 | `check.sh` | the lane checks of a pair (the lane's `check.sh` contract, plus `MODULE_CERT`): `config-required.txt`, the certificate built into `vmlinuz`, the signer of every module, the NVIDIA signatures verified with `openssl cms`, `kernel-uname-r`, no private key in a payload |
 | `config-required.txt` | the config lines ADR 0015 relies on, compared verbatim |
 | `patches/` | the ALC294 quirk, out of any series (ADR 0015, section 8) |
 | `kernel.env` | the COPR, chroot, SRPM NEVRA and sha256, the COPR key, the CachyOS tag and its key; `KEY=VALUE`, never sourced, read by nothing yet |
 | `nvidia.env` | the `nvidia-kmod` SRPM and each userspace RPM with NEVRA and sha256, the negativo17 key; the same format |
+
+## The pair job
+
+`pair.sh MIRROR OUT [DNF-OPTION...]` follows the lane's `check.sh` contract: exit 1
+holds the pair, with the reason on the last line; exit 2 means it could not run. A
+reason that starts with `kmod:` is a kmod failure on a kernel that built, `kernel:` a
+kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h or
+14 days) from that.
+
+- MIRROR holds the files `kernel.env` and `nvidia.env` pin, under their RPM file
+  names, and the two key files `copr.gpg` and `negativo17.gpg`. Each key file must
+  hold exactly its pinned key; each input must have its pinned sha256 and a signature
+  that `rpmkeys -K` accepts against a keyring holding only its key. Anything else
+  holds the pair before a key exists.
+- The module key lives on the tmpfs `MODKEY_DIR` (`/run/apex-modkey` by default) and is
+  shredded on every exit after it was made; a directory that is not empty is refused,
+  and left alone.
+- OUT gets `pair.lock` (`kernel=`, `kmod=` with their NEVRAs, `module_cert_sha256=`,
+  one `rpm=FILE SHA256` per built RPM), the RPMs under `rpms/`, the certificate and
+  one log per stage.
+- The selftest runs it against fake rpm tools, a fake kmod build and a fake
+  `check.sh`. On 2026-10-24 it also ran in a `fedora:45` container on the real mirror
+  of 7.3.0-4 and 615.78.08 up to `rpmbuild -bb`, which was stubbed: the inputs
+  verified, the key was made, `kernel-spec.patch` applied and the BuildRequires
+  installed, and the stub's failure held the pair with only the certificate left on
+  the tmpfs. A whole pair has not run through `pair.sh`; that waits for the builder
+  VM, whose disk the kernel build needs.
+
+`bump.sh check` prefers a point bump over a major one, because the lane takes a point
+bump unattended. The pinned major's EOL counts 0 days once kernel.org lists it as EOL
+or drops it, and otherwise 16 days after the next major's release (ROADMAP's 7.1 and
+7.2), or `unknown` when releases.json no longer shows that date.
 
 ## K1, 2026-10-02
 
