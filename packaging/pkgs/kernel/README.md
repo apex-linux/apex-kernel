@@ -47,6 +47,11 @@ kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h 
   leaves the tree for the copy; `pair.sh` then deletes it, before the kmod build.
   `-devel` is `rpms/kernel-cachyos-devel-*.rpm`. The other stage logs stay at the top
   of OUT.
+- `vmlinux` must have a `.BTF` section (`readelf --section-headers`): the config line
+  `CONFIG_DEBUG_INFO_BTF=y` says BTF was asked for, not that pahole wrote it. Without
+  one the pair holds with "kernel: vmlinux has no .BTF section", and `OUT/debug/` is
+  still kept. The COPR's 7.3.0-4 vmlinux, unpacked from its `vmlinuz`, carries a
+  6.6 MB `.BTF`.
 - A kmod failure still leaves a kernel the lane can ship as `degraded=nvidia`: after
   the shred, `check.sh` runs with `CHECK_SCOPE=kernel` (the kernel-side checks, any
   kmod RPM ignored, and `kernel-uname-r` from `kernel-cachyos-core`), and OUT gets
@@ -416,8 +421,9 @@ requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
   `--noclean` and copies it to `OUT/debug/`.
 - Install `perl-Math-BigInt`, `file`, `diffutils`, `binutils`, `kmod` and `cpio` before
   `check.sh`.
-- Add the two gates of ARCHITECTURE 4.2 that `check.sh` does not run yet: BTF present,
-  and the module count within 5 % of the previous pair.
+- The two gates of ARCHITECTURE 4.2 beyond `check.sh`: BTF present is `pair.sh`'s (a
+  `.BTF` section in `OUT/debug/vmlinux`, else a `kernel:` hold); the module count within
+  5 % of the previous pair is apex-lane's, which alone sees the last good pair.
 - Sign the kernel and kmod RPMs with the Apex RPM key, and take them through `[apex]`
   with `gpgcheck=1`; the spike used an unsigned local repository.
 - In `qualify.sh`, key G4 on `kernel-cachyos-core` (and the kmod) instead of `kernel`,

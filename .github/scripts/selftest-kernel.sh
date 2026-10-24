@@ -67,7 +67,7 @@ grep -q apex_module_sig_key "${!#}" || { echo "the spec is not patched"; exit 1;
 [[ " $* " == *" --noclean "* ]] || { echo "rpmbuild would remove the build tree"; exit 1; }
 tree=$topdir/BUILD/kernel-cachyos-7.3.0-build/linux-cachyos-7.3.0-4
 mkdir -p "$tree"
-printf 'fake vmlinux\n' >"$tree/vmlinux"
+printf 'fake vmlinux%s\n' "${FAKE_VMLINUX_NOTE:-}" >"$tree/vmlinux"
 printf 'fake System.map\n' >"$tree/System.map"
 printf 'CONFIG_FAKE=y\n' >"$tree/.config"
 echo "fake rpmbuild log"
@@ -79,6 +79,12 @@ EOF
 fake dnf5 <<'EOF'
 #!/usr/bin/env bash
 exit 0
+EOF
+fake readelf <<'EOF'
+#!/usr/bin/env bash
+! grep -q 'not an ELF' "${!#}" || { echo "readelf: Error: Failed to read file's magic number" >&2; exit 1; }
+printf '  [ 1] .text             PROGBITS\n'
+grep -q 'without BTF' "${!#}" || printf '  [14] .BTF              PROGBITS\n  [15] .BTF_ids          PROGBITS\n'
 EOF
 cat >"$P/kernel/kmod-build.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -149,6 +155,17 @@ check "pair: OUT/debug keeps the kernel config" CONFIG_FAKE=y "$(cat "$PAIR_OUT/
 check "pair: OUT/debug keeps the kernel build log" "fake rpmbuild log" "$(cat "$PAIR_OUT/debug/kernel.log")"
 check_false "pair: the kept files are only under OUT/debug" test -e "$PAIR_OUT/vmlinux" -o -e "$PAIR_OUT/kernel.log"
 check "pair: the build tree is gone after the copy" "" "$(find "$PAIR_OUT/tmp" -name vmlinux)"
+
+run_pair "FAKE_VMLINUX_NOTE= without BTF"
+check "pair: a vmlinux without .BTF holds the pair" 1 "$PAIR_RC"
+check "pair: the missing BTF is named" "kernel: vmlinux has no .BTF section" "$PAIR_LAST"
+check_false "pair: a vmlinux without .BTF writes no lock" test -e "$PAIR_OUT/pair.lock" -o -e "$PAIR_OUT/kernel.lock"
+check_true "pair: a vmlinux without .BTF still keeps OUT/debug" test -s "$PAIR_OUT/debug/vmlinux"
+check_true "pair: the key is shredded after a vmlinux without .BTF" shredded
+
+run_pair "FAKE_VMLINUX_NOTE= not an ELF"
+check "pair: an unreadable vmlinux holds the pair" 1 "$PAIR_RC"
+check "pair: the unreadable vmlinux is named" "kernel: readelf cannot read vmlinux" "$PAIR_LAST"
 
 run_pair FAKE_KMOD_RC=1
 check "pair: a kmod failure holds the pair" 1 "$PAIR_RC"

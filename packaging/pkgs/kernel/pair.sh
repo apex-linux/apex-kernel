@@ -19,7 +19,8 @@ container:
   2. generates the job's module key on the tmpfs MODKEY_DIR (module-key.sh);
   3. applies kernel-spec.patch and builds the kernel with rpmbuild -bb, through
      ccache when CCACHE_DIR is set; keeps OUT/debug/vmlinux, OUT/debug/System.map
-     and OUT/debug/config from the build tree, then removes the tree;
+     and OUT/debug/config from the build tree, then removes the tree, and holds the
+     pair when vmlinux has no .BTF section;
   4. builds the kmod for that kernel (kmod-build.sh);
   5. shreds the private key;
   6. runs check.sh with MODULE_CERT;
@@ -145,6 +146,15 @@ keep_build_files() {
     fi
     rm -rf -- "$topdir/BUILD"
     printf 'ok kept vmlinux, System.map and config\n'
+    require_btf "$out/debug/vmlinux"
+}
+
+# CONFIG_DEBUG_INFO_BTF=y in the config does not prove that pahole wrote the section.
+require_btf() {
+    local sections
+    sections=$(readelf --section-headers --wide -- "$1" 2>/dev/null) || hold "kernel: readelf cannot read vmlinux"
+    grep -qE '[[:space:]]\.BTF[[:space:]]' <<<"$sections" || hold "kernel: vmlinux has no .BTF section"
+    printf 'ok vmlinux has a .BTF section\n'
 }
 
 build_kmod() {
@@ -238,7 +248,7 @@ main() {
     verify_inputs
     "${dnf[@]}" install rpm-build dnf5-plugins patch openssl perl-Math-BigInt file diffutils binutils kmod \
         cpio xz zstd findutils >"$out/dnf.log" 2>&1 || cannot "dnf cannot install the job's tools"
-    for tool in rpmbuild patch openssl; do
+    for tool in rpmbuild patch openssl readelf; do
         command -v "$tool" >/dev/null || cannot "no $tool after dnf install"
     done
     make_key "$release"
