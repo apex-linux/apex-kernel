@@ -64,6 +64,13 @@ done
 grep -q apex_module_sig_key "${!#}" || { echo "the spec is not patched"; exit 1; }
 [[ -s $key ]] || { echo "no module key at $key"; exit 1; }
 ((${FAKE_RPMBUILD_RC:-0} == 0)) || { echo "fake rpmbuild failure"; exit "$FAKE_RPMBUILD_RC"; }
+[[ " $* " == *" --noclean "* ]] || { echo "rpmbuild would remove the build tree"; exit 1; }
+tree=$topdir/BUILD/kernel-cachyos-7.3.0-build/linux-cachyos-7.3.0-4
+mkdir -p "$tree"
+printf 'fake vmlinux\n' >"$tree/vmlinux"
+printf 'fake System.map\n' >"$tree/System.map"
+printf 'CONFIG_FAKE=y\n' >"$tree/.config"
+echo "fake rpmbuild log"
 mkdir -p "$topdir/RPMS/x86_64"
 for name in kernel-cachyos kernel-cachyos-core kernel-cachyos-modules kernel-cachyos-devel; do
     printf 'nevr=%s-0:7.3.0-4.cachyos1.fc45.x86_64\n' "$name" >"$topdir/RPMS/x86_64/$name-7.3.0-4.cachyos1.fc45.x86_64.rpm"
@@ -114,7 +121,8 @@ run_pair() {
     PAIR_KEY=$(mktemp -d -p "$SHM")
     PAIR_OUT=$(mktemp -d -p "$P")
     PAIR_RC=0
-    env PATH="$P/bin:$PATH" FAKE_SCOPE_LOG="$PAIR_OUT/scope" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY" PAIR_ID=selftest "$@" \
+    mkdir "$PAIR_OUT/tmp"
+    env PATH="$P/bin:$PATH" TMPDIR="$PAIR_OUT/tmp" FAKE_SCOPE_LOG="$PAIR_OUT/scope" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY" PAIR_ID=selftest "$@" \
         "$P/kernel/pair.sh" "$P/mirror" "$PAIR_OUT" --repo=fedora >"$PAIR_OUT/stdout" 2>"$PAIR_OUT/stderr" || PAIR_RC=$?
     PAIR_LAST=$(tail -n 1 "$PAIR_OUT/stderr")
 }
@@ -133,6 +141,11 @@ check "pair.lock holds every RPM's sha256" 5 "$(grep -cE '^rpm=[^ ]+\.rpm [0-9a-
 check_true "pair: the key is shredded after a good pair" shredded
 check "pair: a good pair checks the whole pair" pair "$(cat "$PAIR_OUT/scope")"
 check_false "pair: a good pair writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
+check "pair: OUT keeps vmlinux from the build tree" "fake vmlinux" "$(cat "$PAIR_OUT/vmlinux")"
+check "pair: OUT keeps System.map" "fake System.map" "$(cat "$PAIR_OUT/System.map")"
+check "pair: OUT keeps the kernel config" CONFIG_FAKE=y "$(cat "$PAIR_OUT/config")"
+check "pair: OUT keeps the kernel build log" "fake rpmbuild log" "$(cat "$PAIR_OUT/kernel.log")"
+check "pair: the build tree is gone after the copy" "" "$(find "$PAIR_OUT/tmp" -name vmlinux)"
 
 run_pair FAKE_KMOD_RC=1
 check "pair: a kmod failure holds the pair" 1 "$PAIR_RC"
@@ -149,6 +162,8 @@ check "kernel.lock holds the module certificate's fingerprint" "$(sha_of "$PAIR_
 check "kernel.lock holds the four kernel RPMs" 4 "$(grep -cE '^rpm=kernel-cachyos[^ ]*\.rpm [0-9a-f]{64}$' "$PAIR_OUT/kernel.lock")"
 check "pair: a kmod failure copies the kernel RPMs alone" 4 "$(find "$PAIR_OUT/rpms" -name 'kernel-cachyos*.rpm' | wc -l)"
 check_false "pair: a kmod failure copies no kmod RPM" test -n "$(find "$PAIR_OUT/rpms" -name 'kmod-nvidia*')"
+check_true "pair: a kmod failure keeps vmlinux, System.map, config and the log" \
+    test -s "$PAIR_OUT/vmlinux" -a -s "$PAIR_OUT/System.map" -a -s "$PAIR_OUT/config" -a -s "$PAIR_OUT/kernel.log"
 
 run_pair FAKE_KMOD_RC=1 FAKE_CHECK_RC=1
 check "pair: a kmod failure with a failed kernel check holds the pair" 1 "$PAIR_RC"
@@ -161,6 +176,8 @@ check "pair: a kernel failure holds the pair" 1 "$PAIR_RC"
 check_true "pair: a kernel failure's reason starts with kernel:" grep -q '^kernel: ' <<<"$PAIR_LAST"
 check_true "pair: the key is shredded after a kernel failure" shredded
 check_false "pair: a kernel failure writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
+check_false "pair: a kernel failure keeps no vmlinux" test -e "$PAIR_OUT/vmlinux"
+check_true "pair: a kernel failure keeps its log" test -s "$PAIR_OUT/kernel.log"
 
 run_pair FAKE_CHECK_RC=1
 check "pair: a failed check holds the pair" 1 "$PAIR_RC"
