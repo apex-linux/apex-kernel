@@ -96,11 +96,11 @@ check_false "kernel: no pkg.env, so neither apex-lane nor image.sh sees a kernel
 for f in kernel.env nvidia.env; do
     check "$f: only comments, blank lines and KEY=VALUE" "" "$(grep -vE '^(#.*|[a-z0-9_]+=[^ ].*|)$' "$K/$f")"
 done
-check "kernel.env keys" "chroot copr copr_key copr_key_expires srpm srpm_sha256 tag tag_key tag_key_expires " \
+check "kernel.env keys" "chroot copr copr_key copr_key_expires srpm srpm_sha256 tag tag_key tag_key_expires tag_key_url tag_repo " \
     "$(env_keys "$K/kernel.env")"
 check "nvidia.env keys" "kmod_srpm kmod_srpm_sha256 negativo17_key negativo17_key_expires userspace " \
     "$(env_keys "$K/nvidia.env")"
-for key in srpm srpm_sha256 copr_key copr_key_expires tag tag_key tag_key_expires; do
+for key in srpm srpm_sha256 copr_key copr_key_expires tag tag_key tag_key_expires tag_repo tag_key_url; do
     check "kernel.env: one $key" 1 "$(env_values "$K/kernel.env" "$key" | wc -l)"
 done
 for key in kmod_srpm kmod_srpm_sha256 negativo17_key negativo17_key_expires; do
@@ -115,6 +115,12 @@ for key in copr_key tag_key; do
 done
 check_true "nvidia.env: negativo17_key is a fingerprint" is_fingerprint "$(env_values "$K/nvidia.env" negativo17_key)"
 check_true "nvidia.env: negativo17_key_expires is a date" is_date "$(env_values "$K/nvidia.env" negativo17_key_expires)"
+
+check_true "kernel.env: tag_repo is an https git URL" \
+    grep -qxE 'https://[^ ]+\.git' <<<"$(env_values "$K/kernel.env" tag_repo)"
+check "kernel.env: tag_key_url is keys.openpgp.org's URL for tag_key" \
+    "https://keys.openpgp.org/vks/v1/by-fingerprint/$(env_values "$K/kernel.env" tag_key)" \
+    "$(env_values "$K/kernel.env" tag_key_url)"
 
 kernel_srpm=$(env_values "$K/kernel.env" srpm)
 if [[ $kernel_srpm =~ ^kernel-cachyos-0:([0-9.]+)-([0-9]+)\.cachyos[0-9]+\.fc45\.src$ ]]; then
