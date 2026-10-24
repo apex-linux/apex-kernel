@@ -63,6 +63,11 @@ kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h 
   the tmpfs. A whole pair has not run through `pair.sh`; that waits for the builder
   VM, whose disk the kernel build needs.
 
+`APEX_PAIR_FAULT=kmod` is a test hook, for the lane's rehearsal of an injected kmod
+failure: the kmod build fails without running and the job takes the kmod-failure path
+above (exit 1, `kmod:`, `kernel.lock`). Unset or empty it does nothing, any other value
+exits 2, and the builder VM never sets it.
+
 When a point and a major bump both exist, `bump.sh check` prints both, the point first:
 the lane takes the point unattended, and the major line keeps the owner's EOL countdown
 in view. The pinned major's EOL counts 0 days once kernel.org lists it as EOL

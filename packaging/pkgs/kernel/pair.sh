@@ -35,6 +35,10 @@ kernel build's as OUT/debug/kernel.log. A reason
 that starts with "kmod:" is a kmod failure on a kernel that built. DNF-OPTIONs name
 the compose's repositories. MODKEY_DIR defaults to /run/apex-modkey; PAIR_ID names
 the key's certificate.
+
+APEX_PAIR_FAULT=kmod is a test hook for the lane's rehearsals: the kmod build fails
+without running, and the job takes the kmod-failure path above. Unset or empty, it
+does nothing; any other value is refused with exit 2.
 EOF
 }
 
@@ -144,6 +148,10 @@ keep_build_files() {
 }
 
 build_kmod() {
+    if [[ $fault == kmod ]]; then
+        printf 'pair.sh: APEX_PAIR_FAULT=kmod: the kmod build did not run\n' >"$out/kmod.log"
+        return 1
+    fi
     "$here/kmod-build.sh" "$mirror/$(file_of "$kmod_srpm")" "$topdir/RPMS" "$key_dir" "$topdir" "${dnf_options[@]}" \
         >"$out/kmod.log" 2>&1 || return 1
     printf 'ok the kmod built\n'
@@ -205,6 +213,8 @@ main() {
     (($# >= 2)) || { usage >&2; exit 2; }
     mirror=$1 out=$2
     shift 2
+    fault=${APEX_PAIR_FAULT:-}
+    [[ -z $fault || $fault == kmod ]] || cannot "APEX_PAIR_FAULT is kmod or empty, not '$fault'"
     dnf_options=("$@")
     dnf=(dnf5 -y -q "${dnf_options[@]}")
     local tool release

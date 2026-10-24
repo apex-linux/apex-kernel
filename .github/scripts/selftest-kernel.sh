@@ -83,6 +83,7 @@ EOF
 cat >"$P/kernel/kmod-build.sh" <<'EOF'
 #!/usr/bin/env bash
 [[ -s $3/signing_key.pem ]] || { echo "no module key"; exit 1; }
+touch "${FAKE_SCOPE_LOG%/*}/kmod-build-ran"
 printf 'nevr=kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-3:615.78.08-1.fc45.x86_64\n' \
     >"$4/RPMS/x86_64/kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-615.78.08-1.fc45.x86_64.rpm"
 ((${FAKE_KMOD_RC:-0} == 0)) || { echo "fake kmod failure after a partial RPM"; exit "$FAKE_KMOD_RC"; }
@@ -141,6 +142,7 @@ check "pair.lock holds every RPM's sha256" 5 "$(grep -cE '^rpm=[^ ]+\.rpm [0-9a-
 check_true "pair: the key is shredded after a good pair" shredded
 check "pair: a good pair checks the whole pair" pair "$(cat "$PAIR_OUT/scope")"
 check_false "pair: a good pair writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
+check_true "pair: a good pair runs the kmod build" test -e "$PAIR_OUT/kmod-build-ran"
 check "pair: OUT/debug keeps vmlinux from the build tree" "fake vmlinux" "$(cat "$PAIR_OUT/debug/vmlinux")"
 check "pair: OUT/debug keeps System.map" "fake System.map" "$(cat "$PAIR_OUT/debug/System.map")"
 check "pair: OUT/debug keeps the kernel config" CONFIG_FAKE=y "$(cat "$PAIR_OUT/debug/config")"
@@ -165,6 +167,24 @@ check "pair: a kmod failure copies the kernel RPMs alone" 4 "$(find "$PAIR_OUT/r
 check_false "pair: a kmod failure copies no kmod RPM" test -n "$(find "$PAIR_OUT/rpms" -name 'kmod-nvidia*')"
 check_true "pair: a kmod failure keeps vmlinux, System.map, config and the log" \
     test -s "$PAIR_OUT/debug/vmlinux" -a -s "$PAIR_OUT/debug/System.map" -a -s "$PAIR_OUT/debug/config" -a -s "$PAIR_OUT/debug/kernel.log"
+
+run_pair APEX_PAIR_FAULT=kmod
+check "pair: APEX_PAIR_FAULT=kmod holds the pair as a kmod failure" 1 "$PAIR_RC"
+check "pair: the injected fault gives the kmod failure's reason" \
+    "kmod: nvidia-kmod-3:615.78.08-1.fc45.src does not build for this kernel" "$PAIR_LAST"
+check_false "pair: the injected fault runs no kmod build" test -e "$PAIR_OUT/kmod-build-ran"
+check_true "pair: the injected fault still writes kernel.lock" test -s "$PAIR_OUT/kernel.lock"
+check "pair: the injected fault checks the kernel alone" kernel "$(cat "$PAIR_OUT/scope")"
+check_true "pair: the key is shredded after the injected fault" shredded
+
+run_pair APEX_PAIR_FAULT=
+check "pair: an empty APEX_PAIR_FAULT changes nothing" 0 "$PAIR_RC"
+check_true "pair: an empty APEX_PAIR_FAULT runs the kmod build" test -e "$PAIR_OUT/kmod-build-ran"
+
+run_pair APEX_PAIR_FAULT=kernel
+check "pair: any other APEX_PAIR_FAULT means it cannot run" 2 "$PAIR_RC"
+check "pair: the refused fault is named" "pair.sh cannot run: APEX_PAIR_FAULT is kmod or empty, not 'kernel'" "$PAIR_LAST"
+check_false "pair: a refused fault makes no key" test -e "$PAIR_KEY/signing_key.x509"
 
 run_pair FAKE_KMOD_RC=1 FAKE_CHECK_RC=1
 check "pair: a kmod failure with a failed kernel check holds the pair" 1 "$PAIR_RC"
