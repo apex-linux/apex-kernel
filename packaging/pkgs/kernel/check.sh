@@ -8,7 +8,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: RPMS_DIR=DIR CHECK_WORK=DIR MODULE_CERT=FILE check.sh
+usage: RPMS_DIR=DIR CHECK_WORK=DIR MODULE_CERT=FILE [CHECK_SCOPE=pair|kernel] check.sh
 
 The lane checks of one kernel and NVIDIA pair (ADR 0015), run in the build container:
 
@@ -22,7 +22,9 @@ The lane checks of one kernel and NVIDIA pair (ADR 0015), run in the build conta
   - no payload file holds a PEM private key.
 
 RPMS_DIR holds the built RPMs (kernel-cachyos-core, -modules, -devel, and kmod-nvidia
-when the pair has one); CHECK_WORK is scratch, created here.
+when the pair has one); CHECK_WORK is scratch, created here. CHECK_SCOPE=kernel checks
+the kernel alone, for a kernel whose kmod failed: it ignores any kmod-nvidia RPM, and
+checks that kernel-cachyos-core provides kernel-uname-r = its release instead.
 EOF
 }
 
@@ -152,6 +154,13 @@ check_nvidia() {
     ok "${#nvidia_modules[@]} NVIDIA modules verify against the certificate; ${kmod##*/} requires this kernel"
 }
 
+check_kernel_uname_r() {
+    local core=$1
+    rpm --query --package --nosignature --provides -- "$core" | grep -Fxq -- "kernel-uname-r = $release" ||
+        fail "${core##*/} does not provide kernel-uname-r = $release"
+    ok "${core##*/} provides kernel-uname-r = $release"
+}
+
 check_no_private_key() {
     local found
     found=$(grep -rlE --exclude='*.ko.*' -e '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' -- "$root" | head -n 5 || true)
@@ -161,7 +170,8 @@ check_no_private_key() {
 
 main() {
     case ${1:-} in -h | --help) usage; exit 0 ;; esac
-    local v tool pattern package core
+    local v tool pattern package core scope=${CHECK_SCOPE:-pair}
+    [[ $scope == pair || $scope == kernel ]] || cannot "CHECK_SCOPE is pair or kernel, not '$scope'"
     for v in RPMS_DIR CHECK_WORK MODULE_CERT; do
         [[ -n ${!v:-} ]] || cannot "$v is not set"
     done
@@ -187,8 +197,9 @@ main() {
     [[ -s $modules/vmlinuz && -s $modules/config && -d $kernel_tree/scripts ]] ||
         fail "the kernel RPMs do not hold vmlinuz, config and the kernel tree of $release"
 
-    local -a kmods
-    mapfile -t kmods < <(find "$RPMS_DIR" -type f -name "kmod-nvidia-$release-[0-9]*.rpm")
+    local -a kmods=()
+    [[ $scope == kernel ]] ||
+        mapfile -t kmods < <(find "$RPMS_DIR" -type f -name "kmod-nvidia-$release-[0-9]*.rpm")
     ((${#kmods[@]} <= 1)) || fail "expected at most one kmod-nvidia for $release, found ${#kmods[@]}"
     ((${#kmods[@]} == 0)) || unpack "${kmods[0]}"
 
@@ -196,6 +207,7 @@ main() {
     check_builtin_certificate
     check_module_signers
     ((${#kmods[@]} == 0)) || check_nvidia "${kmods[0]}"
+    [[ $scope == pair ]] || check_kernel_uname_r "$core"
     check_no_private_key
 }
 
