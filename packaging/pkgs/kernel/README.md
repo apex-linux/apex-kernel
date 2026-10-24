@@ -18,7 +18,7 @@ neither `apex-lane` nor `image.sh` sees a kernel family yet.
 | `check.sh` | the lane checks of a pair (the lane's `check.sh` contract, plus `MODULE_CERT`): `config-required.txt`, the certificate built into `vmlinuz`, the signer of every module, the NVIDIA signatures verified with `openssl cms`, `kernel-uname-r`, no private key in a payload |
 | `config-required.txt` | the config lines ADR 0015 relies on, compared verbatim |
 | `patches/` | the ALC294 quirk, out of any series (ADR 0015, section 8) |
-| `kernel.env` | the COPR, chroot, SRPM NEVRA and sha256, the COPR key, the CachyOS tag and its key; `KEY=VALUE`, never sourced, read by nothing yet |
+| `kernel.env` | the COPR, chroot, SRPM NEVRA and sha256, the COPR key; the CachyOS tag, the repository it is verified from (`tag_repo`, the one K1 step 5 used) and its key, with the key's keys.openpgp.org URL (`tag_key_url`; keyserver.ubuntu.com serves the same key); `KEY=VALUE`, never sourced |
 | `nvidia.env` | the `nvidia-kmod` SRPM and each userspace RPM with NEVRA and sha256, the negativo17 key; the same format |
 
 ## The pair job
