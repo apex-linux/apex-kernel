@@ -29,6 +29,10 @@ container:
      the licences, README.source and SHA256SUMS) and checks it with source-check.sh;
   8. writes OUT/pair.lock and copies the RPMs to OUT/rpms.
 
+On every exit once OUT exists, OUT/timings gives the seconds of each stage reached
+(verify, dnf, key, kernel_builddep, kernel, kmod, check, source), with ccache's hits,
+misses and size when CCACHE_DIR is set, and the total, as KEY=VALUE lines.
+
 When the kmod fails, the kernel can still ship without NVIDIA (degraded=nvidia): after
 the shred, check.sh runs with CHECK_SCOPE=kernel, and OUT gets kernel.lock (pair.lock
 without the kmod line) and the kernel RPMs. The exit stays 1 with a "kmod:" reason;
@@ -111,6 +115,34 @@ shred_key_on_exit() {
     fi
 }
 
+# Each stage's seconds run until the next stage starts, or until the job exits.
+stage() {
+    [[ -z $stage_name ]] || stage_seconds+=("$stage_name=$((SECONDS - stage_start))")
+    stage_name=$1 stage_start=$SECONDS
+}
+
+ccache_stats() {
+    ccache --print-stats 2>/dev/null | awk -F '\t' '
+        $1 == "direct_cache_hit" || $1 == "preprocessed_cache_hit" { hits += $2 }
+        $1 == "cache_miss" { misses = $2 }
+        $1 == "cache_size_kibibyte" { size = $2 }
+        END { printf "ccache_hits=%d\nccache_misses=%d\nccache_size_kib=%d\n", hits, misses, size }'
+}
+
+write_timings() {
+    stage ''
+    {
+        ((${#stage_seconds[@]} == 0)) || printf '%s\n' "${stage_seconds[@]}"
+        ((ccache_used == 0)) || ccache_stats
+        printf 'total=%d\n' "$SECONDS"
+    } >"$out/timings" 2>/dev/null || true
+}
+
+on_exit() {
+    shred_key_on_exit
+    write_timings
+}
+
 make_key() {
     local release=$1
     [[ -d $key_dir && -z $(ls -A -- "$key_dir") ]] || cannot "$key_dir is not an empty directory"
@@ -125,12 +157,16 @@ build_kernel() {
         cannot "the kernel SRPM does not install"
     patch --fuzz=0 -p1 -d "$topdir/SPECS" <"$here/kernel-spec.patch" >"$out/spec-patch.log" 2>&1 ||
         hold_with_log "$out/spec-patch.log" "kernel: kernel-spec.patch does not apply with fuzz 0"
+    stage kernel_builddep
     "${dnf[@]}" builddep "${spec_defines[@]}" "$spec" \
         >"$out/kernel-builddep.log" 2>&1 || cannot "dnf cannot install the kernel's BuildRequires"
     if [[ -n ${CCACHE_DIR:-} ]]; then
         "${dnf[@]}" install ccache >>"$out/dnf.log" 2>&1 || cannot "dnf cannot install ccache"
         export CCACHE_DIR PATH=/usr/lib64/ccache:$PATH
+        ccache --zero-stats >/dev/null || cannot "ccache cannot reset its statistics"
+        ccache_used=1
     fi
+    stage kernel
     rpmbuild -bb --noclean --define "_topdir $topdir" "${spec_defines[@]}" "$spec" >"$out/debug/kernel.log" 2>&1 ||
         hold_with_log "$out/debug/kernel.log" "kernel: rpmbuild -bb failed"
     printf 'ok the kernel built\n'
@@ -314,7 +350,9 @@ main() {
     mkdir -p -- "$out/debug"
     out=$(cd -- "$out" && pwd)
     work=$(mktemp -d) topdir=$work/topdir
-    trap shred_key_on_exit EXIT
+    stage_name='' stage_start=0 ccache_used=0
+    stage_seconds=()
+    trap on_exit EXIT
     trap 'exit 130' INT TERM
 
     kernel_srpm=$(env_value "$kernel_env" srpm)
@@ -323,25 +361,33 @@ main() {
     spec_defines=(--define "apex_release $apex_release" --define "apex_series $here/series"
         --define "apex_module_sig_key $key_dir/signing_key.pem")
     release=$(sed -E "s/^kernel-cachyos-[0-9]+:(.*)\.(fc[0-9]+)\.src$/\1.apex$apex_release.\2/" <<<"$kernel_srpm").x86_64
+    stage verify
     verify_inputs
+    stage dnf
     "${dnf[@]}" install rpm-build dnf5-plugins patch openssl perl-Math-BigInt file diffutils binutils kmod \
         cpio tar xz zstd findutils >"$out/dnf.log" 2>&1 || cannot "dnf cannot install the job's tools"
     for tool in rpmbuild patch openssl readelf; do
         command -v "$tool" >/dev/null || cannot "no $tool after dnf install"
     done
+    stage key
     make_key "$release"
     build_kernel
+    stage kmod
     local kmod_built=1 kmod_nevra
     build_kmod || kmod_built=0
     "$here/module-key.sh" shred "$key_dir" || cannot "module-key.sh could not shred the job's key"
     if ((kmod_built)); then
+        stage check
         run_checks pair
         kmod_nevra=$(only_built 'kmod-nvidia-*.rpm')
         kmod_nevra=$(nevr_of "$kmod_nevra")
+        stage source
         write_source "$kmod_nevra"
         write_lock pair.lock
     else
+        stage check
         run_checks kernel
+        stage source
         write_source "none: the kmod did not build"
         write_lock kernel.lock
         hold_with_log "$out/kmod.log" "kmod: $kmod_srpm does not build for this kernel"
