@@ -11,12 +11,13 @@ neither `apex-lane` nor `image.sh` sees a kernel family yet.
 | File | Role |
 |---|---|
 | `kernel-spec.patch` | ADR 0015 §1's build-mechanics hunks, made against the 7.3.0-4 spec: `Release: %{_cachyos_release}.cachyos1.apex%{apex_release}%{?dist}`; `_disable_source_fetch 1`; after `%autopatch`, the patches `series` names, with `patch -p1 --fuzz=0`; `MODULE_SIG_KEY` names the job's key; core `%posttrans` and modules `%posttrans` reduced to `depmod -a`, core `%preun` dropped. The defines `apex_release`, `apex_series` and `apex_module_sig_key` are each required: the spec does not parse without them |
-| `series` | the patches applied after the CachyOS ones, one file name per line relative to `series`; empty today |
+| `series` | the patches applied after the CachyOS ones, one file name per line relative to `series`; empty today. The spec's `%prep` first runs `test -r` on it: a missing series file would otherwise pass unseen through the `sed \| while` pipe that applies it |
 | `tests/fixtures/` | the 7.3.0-4 SRPM's `kernel-cachyos.spec` (sha256 `0edf6e56…`), which the selftest patches with `kernel-spec.patch` |
 | `module-key.sh` | `generate DIR CN`: an ECDSA P-384 key and its certificate on a tmpfs, the kernel's own certificate extensions; `shred DIR`: the private key goes, the DER certificate stays |
 | `kmod-build.sh` | in the container that built the kernel: installs its `kernel-cachyos-devel`, checks the GCC major, rebuilds the `nvidia-kmod` SRPM unmodified with `--define 'kernels <uname -r>'` and kmodtool's signing macros |
 | `pair.sh` | the pair job, run as root in one fresh `fedora:45` container: verifies every pinned input of the mirror, makes the key, builds the kernel (ccache when `CCACHE_DIR` is set) and the kmod, shreds the key, runs `check.sh`, writes `pair.lock`; [the contract below](#the-pair-job) |
 | `bump.sh` | `bump.sh check`: `point`, `major … waiting-for-owner EOL-in-Nd` or `none` from the COPR and kernel.org, then the newest negativo17 builds of the pinned NVIDIA branch; edits nothing |
+| `source-check.sh` | `source-check.sh DIR`: checks a pair's public source set ([below](#the-public-source-set)); exit 1 names what is missing or wrong, exit 2 means it could not run |
 | `check.sh` | the lane checks of a pair (the lane's `check.sh` contract, plus `MODULE_CERT`): `config-required.txt`, the certificate built into `vmlinuz`, the signer of every module, the NVIDIA signatures verified with `openssl cms`, `kernel-uname-r`, no private key in a payload |
 | `config-required.txt` | the config lines ADR 0015 relies on, compared verbatim |
 | `patches/` | the ALC294 quirk, out of any series (ADR 0015, section 8) |
@@ -69,6 +70,32 @@ kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h 
   installed, and the stub's failure held the pair with only the certificate left on
   the tmpfs. A whole pair has not run through `pair.sh`; that waits for the builder
   VM, whose disk the kernel build needs.
+
+## The public source set
+
+ADR 0015 gives each public image digest a source artifact for the GPL kernel and open
+modules (ROADMAP N6). `pair.sh` writes it to `OUT/source/` for every pair it builds,
+the kernel-only pair of a kmod failure included, and runs `source-check.sh` on it before
+any lock exists: a set that does not check holds the pair with a `source:` reason.
+
+| Path | Holds |
+|---|---|
+| `srpms/` | the kernel and nvidia-kmod SRPMs, the mirror's files under their RPM names, the same bytes `pair.sh` verified |
+| `recipe/` | `kernel-spec.patch`, `series`, every patch the series names (at its series-relative path), `kernel.env`, `nvidia.env` |
+| `licenses/` | the kernel's `COPYING` and `LICENSES/preferred/GPL-2.0` as `kernel-COPYING` and `GPL-2.0`, taken from the build tree; nvidia-kmod's `COPYING` (MIT and GPL-2.0, at the top of its source tarball; the spec's `License:` reads "NVIDIA License" and ships no `%license` file), or `nvidia-kmod-COPYING.note` naming where it is when it cannot be extracted |
+| `README.source` | the kernel and kmod NEVRAs (`kmod=none: …` after a kmod failure), `tag`, `tag_repo`, `apex_release`, the two SRPMs, and how to rebuild: `rpm -i` the kernel SRPM, apply `kernel-spec.patch`, `rpmbuild -bb` with the three defines (the spec applies the series in order), then the kmod for that kernel |
+| `SHA256SUMS` | every other file of the set, `sha256sum` format, paths relative to the set |
+
+`source-check.sh` checks, in this order, and names the first failure: the recipe and
+every series entry; exactly the two pinned SRPM names in `srpms/`, each with its pinned
+sha256; the licences; `README.source`; then that `SHA256SUMS` lists every file, no more,
+and matches. On 2026-10-24 it passed on a set of the real 7.3.0-4 and 615.78.08 SRPMs
+with the pins of this directory, and refused it after one changed byte.
+
+What apex-image consumes: the directory `OUT/source/` as it is, checked with
+`source-check.sh`. Publishing it next to an image digest, as an OCI artifact that refers
+to the digest, is apex-image's (`apex-lane sources`), with the owner's keys; nothing
+here publishes.
 
 `APEX_PAIR_FAULT=kmod` is a test hook, for the lane's rehearsal of an injected kmod
 failure: the kmod build fails without running and the job takes the kmod-failure path

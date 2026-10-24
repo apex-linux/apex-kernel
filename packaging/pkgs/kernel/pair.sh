@@ -25,7 +25,9 @@ container:
   4. builds the kmod for that kernel (kmod-build.sh);
   5. shreds the private key;
   6. runs check.sh with MODULE_CERT;
-  7. writes OUT/pair.lock and copies the RPMs to OUT/rpms.
+  7. writes the public source set to OUT/source (both SRPMs as verified, the recipe,
+     the licences, README.source and SHA256SUMS) and checks it with source-check.sh;
+  8. writes OUT/pair.lock and copies the RPMs to OUT/rpms.
 
 When the kmod fails, the kernel can still ship without NVIDIA (degraded=nvidia): after
 the shred, check.sh runs with CHECK_SCOPE=kernel, and OUT gets kernel.lock (pair.lock
@@ -144,8 +146,13 @@ keep_build_files() {
         ! cp -- "${trees[0]}/.config" "$out/debug/config"; then
         hold "kernel: the build tree lacks System.map or .config"
     fi
+    mkdir -p -- "$work/licenses"
+    if ! cp -- "${trees[0]}/COPYING" "$work/licenses/kernel-COPYING" ||
+        ! cp -- "${trees[0]}/LICENSES/preferred/GPL-2.0" "$work/licenses/GPL-2.0"; then
+        hold "kernel: the build tree lacks COPYING or LICENSES/preferred/GPL-2.0"
+    fi
     rm -rf -- "$topdir/BUILD"
-    printf 'ok kept vmlinux, System.map and config\n'
+    printf 'ok kept vmlinux, System.map, config and the kernel licences\n'
     require_btf "$out/debug/vmlinux"
 }
 
@@ -188,6 +195,73 @@ only_built() {
     mapfile -t found < <(find "$topdir/RPMS" -type f -name "$pattern")
     ((${#found[@]} == 1)) || hold "expected one built $pattern, found ${#found[@]}"
     printf '%s\n' "${found[0]}"
+}
+
+nvidia_licence() {
+    local dir=$1 srpm
+    srpm=$mirror/$(file_of "$kmod_srpm")
+    if rpm2cpio "$srpm" 2>/dev/null | cpio -i --quiet --to-stdout '*.tar.gz' 2>/dev/null |
+        tar -xzO --wildcards --no-wildcards-match-slash '*/COPYING' >"$dir/nvidia-kmod-COPYING" 2>/dev/null &&
+        [[ -s $dir/nvidia-kmod-COPYING ]]; then
+        return
+    fi
+    rm -f -- "$dir/nvidia-kmod-COPYING"
+    printf '%s\n' "nvidia-kmod's licence is the file COPYING at the top of the source tarball inside" \
+        "srpms/${srpm##*/}; the spec's License field reads:" \
+        "$(rpm --query --package --nosignature --queryformat '%{LICENSE}' -- "$srpm" 2>/dev/null || echo unknown)" \
+        >"$dir/nvidia-kmod-COPYING.note"
+}
+
+write_source_readme() {
+    local kernel=$1 kmod=$2 series_path=recipe/series
+    cat <<EOF
+Apex kernel pair: public source (ADR 0015, N6)
+
+kernel=$kernel
+kmod=$kmod
+tag=$(env_value "$kernel_env" tag)
+tag_repo=$(env_value "$kernel_env" tag_repo)
+apex_release=${apex_release:-unset}
+kernel_srpm=srpms/$(file_of "$kernel_srpm")
+nvidia_kmod_srpm=srpms/$(file_of "$kmod_srpm")
+
+To rebuild the kernel (fedora:45, as root):
+  rpm -i srpms/$(file_of "$kernel_srpm")
+  cd ~/rpmbuild/SPECS && patch --fuzz=0 -p1 < /path/to/this/recipe/kernel-spec.patch
+  rpmbuild -bb --define 'apex_release ${apex_release:-N}' \\
+      --define 'apex_series /path/to/this/$series_path' \\
+      --define 'apex_module_sig_key /path/to/your/signing_key.pem' kernel-cachyos.spec
+The spec's %prep applies the patches $series_path names, in order, after the CachyOS
+ones. Then the NVIDIA modules for that kernel:
+  rpmbuild --rebuild --define 'kernels <uname -r of that kernel>' srpms/$(file_of "$kmod_srpm")
+
+The licences are in licenses/. SHA256SUMS covers every file here; source-check.sh in
+apex-kernel's packaging/pkgs/kernel/ checks the set.
+EOF
+}
+
+write_source() {
+    local kmod_nevra=$1 src=$out/source entry kernel_nevra
+    kernel_nevra=$(only_built 'kernel-cachyos-[0-9]*.rpm')
+    kernel_nevra=$(nevr_of "$kernel_nevra")
+    rm -rf -- "$src"
+    mkdir -p -- "$src/srpms" "$src/recipe" "$src/licenses"
+    cp -- "$mirror/$(file_of "$kernel_srpm")" "$mirror/$(file_of "$kmod_srpm")" "$src/srpms/"
+    cp -- "$here/kernel-spec.patch" "$here/series" "$kernel_env" "$nvidia_env" "$src/recipe/"
+    while read -r entry; do
+        [[ -f $here/$entry ]] || hold "source: the series names $entry, which is missing"
+        mkdir -p -- "$src/recipe/$(dirname -- "$entry")"
+        cp -- "$here/$entry" "$src/recipe/$entry"
+    done < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$here/series")
+    cp -- "$work/licenses/kernel-COPYING" "$work/licenses/GPL-2.0" "$src/licenses/"
+    nvidia_licence "$src/licenses"
+    write_source_readme "$kernel_nevra" "$kmod_nevra" >"$src/README.source"
+    (cd -- "$src" && find . -type f ! -name SHA256SUMS -printf '%P\0' | LC_ALL=C sort -z | xargs -0 sha256sum --) \
+        >"$work/SHA256SUMS"
+    mv -- "$work/SHA256SUMS" "$src/SHA256SUMS"
+    "$here/source-check.sh" "$src" >"$out/source-check.log" 2>&1 ||
+        hold_with_log "$out/source-check.log" "source: $(tail -n 1 "$out/source-check.log")"
+    printf 'ok wrote and checked %s\n' "$src"
 }
 
 write_lock() {
@@ -251,20 +325,24 @@ main() {
     release=$(sed -E "s/^kernel-cachyos-[0-9]+:(.*)\.(fc[0-9]+)\.src$/\1.apex$apex_release.\2/" <<<"$kernel_srpm").x86_64
     verify_inputs
     "${dnf[@]}" install rpm-build dnf5-plugins patch openssl perl-Math-BigInt file diffutils binutils kmod \
-        cpio xz zstd findutils >"$out/dnf.log" 2>&1 || cannot "dnf cannot install the job's tools"
+        cpio tar xz zstd findutils >"$out/dnf.log" 2>&1 || cannot "dnf cannot install the job's tools"
     for tool in rpmbuild patch openssl readelf; do
         command -v "$tool" >/dev/null || cannot "no $tool after dnf install"
     done
     make_key "$release"
     build_kernel
-    local kmod_built=1
+    local kmod_built=1 kmod_nevra
     build_kmod || kmod_built=0
     "$here/module-key.sh" shred "$key_dir" || cannot "module-key.sh could not shred the job's key"
     if ((kmod_built)); then
         run_checks pair
+        kmod_nevra=$(only_built 'kmod-nvidia-*.rpm')
+        kmod_nevra=$(nevr_of "$kmod_nevra")
+        write_source "$kmod_nevra"
         write_lock pair.lock
     else
         run_checks kernel
+        write_source "none: the kmod did not build"
         write_lock kernel.lock
         hold_with_log "$out/kmod.log" "kmod: $kmod_srpm does not build for this kernel"
     fi

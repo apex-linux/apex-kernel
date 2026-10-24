@@ -25,6 +25,8 @@ sha_of() { sha256sum -- "$1" | awk '{print $1}'; }
 P="$TMP/pair"
 mkdir -p "$P/bin" "$P/mirror"
 cp -r "$KERNEL_SRC" "$P/kernel"
+printf 'a selftest patch\n' >"$P/kernel/patches/0001-selftest.patch"
+printf '# the selftest series\npatches/0001-selftest.patch\n' >"$P/kernel/series"
 cp "$KERNEL_SRC/tests/fixtures/kernel-cachyos-7.3.0-4.cachyos1.spec" "$P/kernel-cachyos.spec"
 
 fake rpmkeys <<'EOF'
@@ -73,6 +75,9 @@ mkdir -p "$tree"
 printf 'fake vmlinux%s\n' "${FAKE_VMLINUX_NOTE:-}" >"$tree/vmlinux"
 printf 'fake System.map\n' >"$tree/System.map"
 printf 'CONFIG_FAKE=y\n' >"$tree/.config"
+mkdir -p "$tree/LICENSES/preferred"
+printf 'fake kernel COPYING\n' >"$tree/COPYING"
+printf 'fake GPL-2.0\n' >"$tree/LICENSES/preferred/GPL-2.0"
 echo "fake rpmbuild log"
 mkdir -p "$topdir/RPMS/x86_64"
 for name in kernel-cachyos kernel-cachyos-core kernel-cachyos-modules kernel-cachyos-devel; do
@@ -119,6 +124,8 @@ cat >"$P/kernel/kernel.env" <<EOF
 srpm=kernel-cachyos-0:7.3.0-4.cachyos1.fc45.src
 srpm_sha256=$(sha_of "$P/mirror/$KERNEL_SRPM")
 copr_key=${COPR_FPR^^}
+tag=cachyos-7.3.0-4
+tag_repo=https://github.com/CachyOS/linux.git
 EOF
 cat >"$P/kernel/nvidia.env" <<EOF
 kmod_srpm=nvidia-kmod-3:615.78.08-1.fc45.src
@@ -154,6 +161,23 @@ check_true "pair: the key is shredded after a good pair" shredded
 check "pair: a good pair checks the whole pair" pair "$(cat "$PAIR_OUT/scope")"
 check_false "pair: a good pair writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
 check_true "pair: a good pair runs the kmod build" test -e "$PAIR_OUT/kmod-build-ran"
+check_true "pair: a good pair's source set passes source-check.sh" "$KERNEL_SRC/source-check.sh" "$PAIR_OUT/source"
+check_true "pair: the source set holds the kernel SRPM as verified" \
+    cmp "$P/mirror/$KERNEL_SRPM" "$PAIR_OUT/source/srpms/$KERNEL_SRPM"
+check_true "pair: the source set holds the kmod SRPM as verified" \
+    cmp "$P/mirror/$KMOD_SRPM" "$PAIR_OUT/source/srpms/$KMOD_SRPM"
+check_true "pair: the source set holds the spec patch" \
+    cmp "$P/kernel/kernel-spec.patch" "$PAIR_OUT/source/recipe/kernel-spec.patch"
+check_true "pair: the source set holds the series' patch" \
+    cmp "$P/kernel/patches/0001-selftest.patch" "$PAIR_OUT/source/recipe/patches/0001-selftest.patch"
+check "pair: README.source names the kernel" kernel=kernel-cachyos-0:7.3.0-4.cachyos1.fc45.x86_64 \
+    "$(grep '^kernel=' "$PAIR_OUT/source/README.source")"
+check "pair: README.source names the kmod" kmod=kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-3:615.78.08-1.fc45.x86_64 \
+    "$(grep '^kmod=' "$PAIR_OUT/source/README.source")"
+check "pair: README.source names the tag" tag=cachyos-7.3.0-4 "$(grep '^tag=' "$PAIR_OUT/source/README.source")"
+check "pair: README.source names the apex release" apex_release=1 "$(grep '^apex_release=' "$PAIR_OUT/source/README.source")"
+check_true "pair: a fake SRPM gets the note on nvidia-kmod's licence" test -s "$PAIR_OUT/source/licenses/nvidia-kmod-COPYING.note"
+SOURCE_GOOD=$PAIR_OUT/source
 check "pair: OUT/debug keeps vmlinux from the build tree" "fake vmlinux" "$(cat "$PAIR_OUT/debug/vmlinux")"
 check "pair: OUT/debug keeps System.map" "fake System.map" "$(cat "$PAIR_OUT/debug/System.map")"
 check "pair: OUT/debug keeps the kernel config" CONFIG_FAKE=y "$(cat "$PAIR_OUT/debug/config")"
@@ -172,12 +196,47 @@ run_pair "FAKE_VMLINUX_NOTE= not an ELF"
 check "pair: an unreadable vmlinux holds the pair" 1 "$PAIR_RC"
 check "pair: the unreadable vmlinux is named" "kernel: readelf cannot read vmlinux" "$PAIR_LAST"
 
+source_check_last() {
+    local set=$TMP/source-mutant
+    rm -rf "$set"
+    cp -r "$SOURCE_GOOD" "$set"
+    "$@" "$set"
+    "$KERNEL_SRC/source-check.sh" "$set" 2>&1 >/dev/null | tail -n 1
+}
+drop_patch() { rm "$1/recipe/patches/0001-selftest.patch"; }
+change_srpm_byte() { printf 'x' >>"$1/srpms/$KMOD_SRPM"; }
+rename_srpm() { mv "$1/srpms/$KMOD_SRPM" "$1/srpms/nvidia-kmod-615.78.08-2.fc45.src.rpm"; }
+drop_licence() { rm "$1/licenses/GPL-2.0"; }
+unlisted_file() { printf 'extra\n' >"$1/recipe/extra"; }
+unknown_srpm() { cp "$1/srpms/$KMOD_SRPM" "$1/srpms/extra.src.rpm"; }
+check "source-check: a missing patch is named" \
+    "not ok: recipe/patches/0001-selftest.patch, which the series names, is missing" "$(source_check_last drop_patch)"
+check "source-check: a changed SRPM byte is named" \
+    "not ok: srpms/$KMOD_SRPM does not have its pinned sha256" "$(source_check_last change_srpm_byte)"
+check "source-check: a wrong SRPM name is named" \
+    "not ok: srpms/$KMOD_SRPM, which the pins name, is missing" "$(source_check_last rename_srpm)"
+check "source-check: a missing licence is named" "not ok: licenses/GPL-2.0 is missing" "$(source_check_last drop_licence)"
+check "source-check: a file SHA256SUMS does not list is named" \
+    "not ok: SHA256SUMS does not list recipe/extra" "$(source_check_last unlisted_file)"
+check "source-check: an unknown SRPM is named" "not ok: srpms/extra.src.rpm is not an SRPM the pins name" \
+    "$(source_check_last unknown_srpm)"
+check "source-check: a missing directory means it cannot run" 2 "$(rc_of "$KERNEL_SRC/source-check.sh" "$TMP/no-such-set")"
+
+printf '0002-not-there.patch\n' >>"$P/kernel/series"
+run_pair
+check "pair: a series entry with no file holds the pair" "source: the series names 0002-not-there.patch, which is missing" "$PAIR_LAST"
+check_false "pair: a pair without its source set writes no lock" test -e "$PAIR_OUT/pair.lock"
+sed -i '/0002-not-there.patch/d' "$P/kernel/series"
+
 run_pair FAKE_KMOD_RC=1
 check "pair: a kmod failure holds the pair" 1 "$PAIR_RC"
 check_true "pair: a kmod failure's reason starts with kmod:" grep -q '^kmod: ' <<<"$PAIR_LAST"
 check_true "pair: the key is shredded after a kmod failure" shredded
 check_false "pair: a kmod failure writes no pair.lock" test -e "$PAIR_OUT/pair.lock"
 check "pair: a kmod failure checks the kernel alone" kernel "$(cat "$PAIR_OUT/scope")"
+check_true "pair: a kmod failure still writes a source set that checks" "$KERNEL_SRC/source-check.sh" "$PAIR_OUT/source"
+check "pair: the kmod failure's README.source says so" "kmod=none: the kmod did not build" \
+    "$(grep '^kmod=' "$PAIR_OUT/source/README.source")"
 check "kernel.lock names the kernel" kernel-cachyos-0:7.3.0-4.cachyos1.fc45.x86_64 \
     "$(sed -n 's/^kernel=//p' "$PAIR_OUT/kernel.lock")"
 check_false "kernel.lock has no kmod line" grep -q '^kmod=' "$PAIR_OUT/kernel.lock"
