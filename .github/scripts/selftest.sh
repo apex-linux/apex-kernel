@@ -84,6 +84,63 @@ check "libfprint.sh refuses to guess GA_REACHED" 1 \
 check "libfprint.sh refuses a GA_REACHED other than 0 or 1" 1 \
     "$(PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" GA_REACHED=yes rc_of "$APEX_ROOT/.github/scripts/libfprint.sh" key)"
 
+# --- kernel pins: KEY=VALUE data only, and no pkg.env for a lane to find ---------------
+K="$APEX_ROOT/packaging/pkgs/kernel"
+env_keys() { sed -n 's/^\([a-z0-9_]*\)=.*/\1/p' "$1" | sort -u | tr '\n' ' '; }
+env_values() { sed -n "s/^$2=//p" "$1"; }
+is_sha256() { [[ $1 =~ ^[0-9a-f]{64}$ ]]; }
+is_fingerprint() { [[ $1 =~ ^[0-9A-F]{40}$ ]]; }
+is_date() { [[ $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; }
+
+check_false "kernel: no pkg.env, so neither apex-lane nor image.sh sees a kernel family" test -e "$K/pkg.env"
+for f in kernel.env nvidia.env; do
+    check "$f: only comments, blank lines and KEY=VALUE" "" "$(grep -vE '^(#.*|[a-z0-9_]+=[^ ].*|)$' "$K/$f")"
+done
+check "kernel.env keys" "chroot copr copr_key copr_key_expires srpm srpm_sha256 tag tag_key tag_key_expires " \
+    "$(env_keys "$K/kernel.env")"
+check "nvidia.env keys" "kmod_srpm kmod_srpm_sha256 negativo17_key negativo17_key_expires userspace " \
+    "$(env_keys "$K/nvidia.env")"
+for key in srpm srpm_sha256 copr_key copr_key_expires tag tag_key tag_key_expires; do
+    check "kernel.env: one $key" 1 "$(env_values "$K/kernel.env" "$key" | wc -l)"
+done
+for key in kmod_srpm kmod_srpm_sha256 negativo17_key negativo17_key_expires; do
+    check "nvidia.env: one $key" 1 "$(env_values "$K/nvidia.env" "$key" | wc -l)"
+done
+
+check_true "kernel.env: srpm_sha256 is 64 hex digits" is_sha256 "$(env_values "$K/kernel.env" srpm_sha256)"
+check_true "nvidia.env: kmod_srpm_sha256 is 64 hex digits" is_sha256 "$(env_values "$K/nvidia.env" kmod_srpm_sha256)"
+for key in copr_key tag_key; do
+    check_true "kernel.env: $key is a fingerprint" is_fingerprint "$(env_values "$K/kernel.env" "$key")"
+    check_true "kernel.env: ${key}_expires is a date" is_date "$(env_values "$K/kernel.env" "${key}_expires")"
+done
+check_true "nvidia.env: negativo17_key is a fingerprint" is_fingerprint "$(env_values "$K/nvidia.env" negativo17_key)"
+check_true "nvidia.env: negativo17_key_expires is a date" is_date "$(env_values "$K/nvidia.env" negativo17_key_expires)"
+
+kernel_srpm=$(env_values "$K/kernel.env" srpm)
+if [[ $kernel_srpm =~ ^kernel-cachyos-0:([0-9.]+)-([0-9]+)\.cachyos[0-9]+\.fc45\.src$ ]]; then
+    check "kernel.env: tag names the SRPM's release" "cachyos-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}" \
+        "$(env_values "$K/kernel.env" tag)"
+else
+    flunk "kernel.env: srpm '$kernel_srpm' is not a kernel-cachyos fc45 SRPM NEVRA"
+fi
+
+kmod_version=$(env_values "$K/nvidia.env" kmod_srpm | sed -n 's/^nvidia-kmod-3:\([0-9.]*\)-[0-9]*\.fc45\.src$/\1/p')
+check_false "nvidia.env: kmod_srpm is an nvidia-kmod fc45 SRPM NEVRA" test -z "$kmod_version"
+userspace_count=0
+while read -r nevra sha256 rest; do
+    userspace_count=$((userspace_count + 1))
+    check_true "nvidia.env: $nevra sha256 is 64 hex digits" is_sha256 "$sha256"
+    check "nvidia.env: $nevra has two fields" "" "$rest"
+    check_true "nvidia.env: $nevra is an fc45 NEVRA" \
+        test -n "$(sed -n '/^[a-z0-9-]*-[0-9]*:[^-]*-[^-]*\.fc45\.\(x86_64\|noarch\)$/p' <<<"$nevra")"
+    case $nevra in
+        nvidia-driver-selinux-*) ;;
+        *) check "nvidia.env: $nevra is the kmod's driver version" "$kmod_version" \
+            "$(sed -n 's/^.*-3:\([0-9.]*\)-.*$/\1/p' <<<"$nevra")" ;;
+    esac
+done < <(env_values "$K/nvidia.env" userspace)
+check_false "nvidia.env: at least one userspace RPM" test "$userspace_count" -eq 0
+
 # --- .gitignore: biometric data never gets tracked -------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG var/lib/fprint/u/1; do
     check_true ".gitignore ignores $f" git -C "$APEX_ROOT" check-ignore -q --no-index "$f"
