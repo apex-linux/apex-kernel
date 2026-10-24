@@ -43,6 +43,14 @@ kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h 
 - OUT gets `pair.lock` (`kernel=`, `kmod=` with their NEVRAs, `module_cert_sha256=`,
   one `rpm=FILE SHA256` per built RPM), the RPMs under `rpms/`, the certificate
   `signing_key.x509` and one log per stage.
+- `OUT/timings` is the build-time report (K7), written on every exit once OUT exists:
+  hold or success. `KEY=VALUE` lines, whole seconds, one per stage the job reached, in
+  order (`verify`, `dnf`, `key`, `kernel_builddep`, `kernel`, `kmod`, `check`,
+  `source`; each runs until the next starts, so `kmod` includes the shred), then
+  `total` from the start of `pair.sh`. With `CCACHE_DIR`, `ccache_hits` (direct plus
+  preprocessed), `ccache_misses` and `ccache_size_kib` follow, counted from a reset
+  before the kernel build, so they cover this job's kernel and kmod. The lane renders
+  the report; nothing here formats it.
 - Once the kernel has built, whatever happens after, `OUT/debug/` holds the files the
   store keeps for a pair: `debug/vmlinux` (with DWARF, from the build tree),
   `debug/System.map`, `debug/config` (the built `.config`) and `debug/kernel.log` (the

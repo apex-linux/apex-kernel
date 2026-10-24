@@ -88,6 +88,13 @@ fake dnf5 <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+fake ccache <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+    --zero-stats) printf 'zeroed\n' >"$CCACHE_DIR/zeroed" ;;
+    --print-stats) printf 'cache_miss\t7\ncache_size_kibibyte\t2048\ndirect_cache_hit\t30\npreprocessed_cache_hit\t5\n' ;;
+esac
+EOF
 fake readelf <<'EOF'
 #!/usr/bin/env bash
 ! grep -q 'not an ELF' "${!#}" || { echo "readelf: Error: Failed to read file's magic number" >&2; exit 1; }
@@ -144,6 +151,12 @@ run_pair() {
     PAIR_LAST=$(tail -n 1 "$PAIR_OUT/stderr")
 }
 
+timing_keys() { sed 's/=.*//' "$PAIR_OUT/timings" | grep -v '^ccache_' | tr '\n' ' ' | sed 's/ $//'; }
+timings_add_up() {
+    awk -F= '$1 == "total" { total = $2; next } $1 !~ /^ccache_/ { sum += $2 } END { exit !(total >= sum) }' \
+        "$PAIR_OUT/timings"
+}
+
 shredded() { [[ ! -e $PAIR_KEY/signing_key.pem && -s $PAIR_KEY/signing_key.x509 ]]; }
 
 run_pair
@@ -161,6 +174,10 @@ check_true "pair: the key is shredded after a good pair" shredded
 check "pair: a good pair checks the whole pair" pair "$(cat "$PAIR_OUT/scope")"
 check_false "pair: a good pair writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
 check_true "pair: a good pair runs the kmod build" test -e "$PAIR_OUT/kmod-build-ran"
+check "timings: a good pair has every stage" "verify dnf key kernel_builddep kernel kmod check source total" "$(timing_keys)"
+check "timings: every line is KEY=integer" "" "$(grep -vE '^[a-z_]+=[0-9]+$' "$PAIR_OUT/timings")"
+check_true "timings: the total covers the stages" timings_add_up
+check_false "timings: no ccache lines without CCACHE_DIR" grep -q '^ccache_' "$PAIR_OUT/timings"
 check_true "pair: a good pair's source set passes source-check.sh" "$KERNEL_SRC/source-check.sh" "$PAIR_OUT/source"
 check_true "pair: the source set holds the kernel SRPM as verified" \
     cmp "$P/mirror/$KERNEL_SRPM" "$PAIR_OUT/source/srpms/$KERNEL_SRPM"
@@ -196,6 +213,15 @@ run_pair "FAKE_VMLINUX_NOTE= not an ELF"
 check "pair: an unreadable vmlinux holds the pair" 1 "$PAIR_RC"
 check "pair: the unreadable vmlinux is named" "kernel: readelf cannot read vmlinux" "$PAIR_LAST"
 
+mkdir -p "$P/ccache"
+run_pair CCACHE_DIR="$P/ccache"
+check "timings: ccache's hits, misses and size with CCACHE_DIR" "ccache_hits=35 ccache_misses=7 ccache_size_kib=2048" \
+    "$(grep '^ccache_' "$PAIR_OUT/timings" | tr '\n' ' ' | sed 's/ $//')"
+check_true "pair: ccache's statistics are reset before the kernel build" test -s "$P/ccache/zeroed"
+
+run_pair APEX_RELEASE=
+check_false "timings: an exit before OUT exists writes none" test -e "$PAIR_OUT/timings"
+
 source_check_last() {
     local set=$TMP/source-mutant
     rm -rf "$set"
@@ -224,11 +250,15 @@ check "source-check: a missing directory means it cannot run" 2 "$(rc_of "$KERNE
 
 printf '0002-not-there.patch\n' >>"$P/kernel/series"
 run_pair
+check "timings: a source failure stops at the source stage" "verify dnf key kernel_builddep kernel kmod check source total" \
+    "$(timing_keys)"
 check "pair: a series entry with no file holds the pair" "source: the series names 0002-not-there.patch, which is missing" "$PAIR_LAST"
 check_false "pair: a pair without its source set writes no lock" test -e "$PAIR_OUT/pair.lock"
 sed -i '/0002-not-there.patch/d' "$P/kernel/series"
 
 run_pair FAKE_KMOD_RC=1
+check "timings: a kmod failure has every stage" "verify dnf key kernel_builddep kernel kmod check source total" \
+    "$(timing_keys)"
 check "pair: a kmod failure holds the pair" 1 "$PAIR_RC"
 check_true "pair: a kmod failure's reason starts with kmod:" grep -q '^kmod: ' <<<"$PAIR_LAST"
 check_true "pair: the key is shredded after a kmod failure" shredded
@@ -274,6 +304,7 @@ check_false "pair: a failed kernel check writes no kernel.lock" test -e "$PAIR_O
 check_true "pair: the key is shredded after a kmod and a kernel check failure" shredded
 
 run_pair FAKE_RPMBUILD_RC=1
+check "timings: a kernel failure stops at the kernel stage" "verify dnf key kernel_builddep kernel total" "$(timing_keys)"
 check "pair: a kernel failure holds the pair" 1 "$PAIR_RC"
 check_true "pair: a kernel failure's reason starts with kernel:" grep -q '^kernel: ' <<<"$PAIR_LAST"
 check_true "pair: the key is shredded after a kernel failure" shredded
