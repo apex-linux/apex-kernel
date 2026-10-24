@@ -18,7 +18,8 @@ container:
      key (MIRROR/copr.gpg for the kernel SRPM, MIRROR/negativo17.gpg for the rest);
   2. generates the job's module key on the tmpfs MODKEY_DIR (module-key.sh);
   3. applies kernel-spec.patch and builds the kernel with rpmbuild -bb, through
-     ccache when CCACHE_DIR is set;
+     ccache when CCACHE_DIR is set; keeps OUT/debug/vmlinux, OUT/debug/System.map
+     and OUT/debug/config from the build tree, then removes the tree;
   4. builds the kmod for that kernel (kmod-build.sh);
   5. shreds the private key;
   6. runs check.sh with MODULE_CERT;
@@ -29,7 +30,8 @@ the shred, check.sh runs with CHECK_SCOPE=kernel, and OUT gets kernel.lock (pair
 without the kmod line) and the kernel RPMs. The exit stays 1 with a "kmod:" reason;
 a failed kernel check gives a "check:" reason and no kernel.lock.
 
-MIRROR holds the pinned files under their RPM file names. Logs go to OUT. A reason
+MIRROR holds the pinned files under their RPM file names. Logs go to OUT, the
+kernel build's as OUT/debug/kernel.log. A reason
 that starts with "kmod:" is a kmod failure on a kernel that built. DNF-OPTIONs name
 the compose's repositories. MODKEY_DIR defaults to /run/apex-modkey; PAIR_ID names
 the key's certificate.
@@ -121,10 +123,24 @@ build_kernel() {
         "${dnf[@]}" install ccache >>"$out/dnf.log" 2>&1 || cannot "dnf cannot install ccache"
         export CCACHE_DIR PATH=/usr/lib64/ccache:$PATH
     fi
-    rpmbuild -bb --define "_topdir $topdir" \
-        --define "apex_module_sig_key $key_dir/signing_key.pem" "$spec" >"$out/kernel.log" 2>&1 ||
-        hold_with_log "$out/kernel.log" "kernel: rpmbuild -bb failed"
+    rpmbuild -bb --noclean --define "_topdir $topdir" \
+        --define "apex_module_sig_key $key_dir/signing_key.pem" "$spec" >"$out/debug/kernel.log" 2>&1 ||
+        hold_with_log "$out/debug/kernel.log" "kernel: rpmbuild -bb failed"
     printf 'ok the kernel built\n'
+    keep_build_files
+}
+
+# rpmbuild's rmbuild stage would delete the tree; --noclean leaves it for this copy.
+keep_build_files() {
+    local -a trees
+    mapfile -t trees < <(find "$topdir/BUILD" -mindepth 3 -maxdepth 3 -type f -name vmlinux -printf '%h\n')
+    ((${#trees[@]} == 1)) || hold "kernel: expected one build tree with vmlinux, found ${#trees[@]}"
+    if ! cp -- "${trees[0]}/vmlinux" "${trees[0]}/System.map" "$out/debug/" ||
+        ! cp -- "${trees[0]}/.config" "$out/debug/config"; then
+        hold "kernel: the build tree lacks System.map or .config"
+    fi
+    rm -rf -- "$topdir/BUILD"
+    printf 'ok kept vmlinux, System.map and config\n'
 }
 
 build_kmod() {
@@ -200,7 +216,7 @@ main() {
     key_dir=${MODKEY_DIR:-/run/apex-modkey} pair_id=${PAIR_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
     key_made=0
     [[ -d $mirror ]] || cannot "no mirror directory $mirror"
-    mkdir -p -- "$out"
+    mkdir -p -- "$out/debug"
     out=$(cd -- "$out" && pwd)
     work=$(mktemp -d) topdir=$work/topdir
     trap shred_key_on_exit EXIT
