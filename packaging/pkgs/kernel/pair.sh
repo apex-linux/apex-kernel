@@ -24,6 +24,11 @@ container:
   6. runs check.sh with MODULE_CERT;
   7. writes OUT/pair.lock and copies the RPMs to OUT/rpms.
 
+When the kmod fails, the kernel can still ship without NVIDIA (degraded=nvidia): after
+the shred, check.sh runs with CHECK_SCOPE=kernel, and OUT gets kernel.lock (pair.lock
+without the kmod line) and the kernel RPMs. The exit stays 1 with a "kmod:" reason;
+a failed kernel check gives a "check:" reason and no kernel.lock.
+
 MIRROR holds the pinned files under their RPM file names. Logs go to OUT. A reason
 that starts with "kmod:" is a kmod failure on a kernel that built. DNF-OPTIONs name
 the compose's repositories. MODKEY_DIR defaults to /run/apex-modkey; PAIR_ID names
@@ -124,14 +129,13 @@ build_kernel() {
 
 build_kmod() {
     "$here/kmod-build.sh" "$mirror/$(file_of "$kmod_srpm")" "$topdir/RPMS" "$key_dir" "$topdir" "${dnf_options[@]}" \
-        >"$out/kmod.log" 2>&1 ||
-        hold_with_log "$out/kmod.log" "kmod: $kmod_srpm does not build for this kernel"
+        >"$out/kmod.log" 2>&1 || return 1
     printf 'ok the kmod built\n'
 }
 
 run_checks() {
-    local rc=0
-    RPMS_DIR=$topdir/RPMS CHECK_WORK=$work/check MODULE_CERT=$key_dir/signing_key.x509 \
+    local scope=$1 rc=0
+    RPMS_DIR=$topdir/RPMS CHECK_WORK=$work/check-$scope MODULE_CERT=$key_dir/signing_key.x509 CHECK_SCOPE=$scope \
         "$here/check.sh" >"$out/check.log" 2>&1 || rc=$?
     case $rc in
         0) printf 'ok check.sh passed\n' ;;
@@ -153,25 +157,31 @@ only_built() {
 }
 
 write_lock() {
-    local rpm kernel kmod certificate
+    local lock=$1 rpm kernel kmod='' certificate
     kernel=$(only_built 'kernel-cachyos-[0-9]*.rpm')
     kernel=$(nevr_of "$kernel")
-    kmod=$(only_built 'kmod-nvidia-*.rpm')
-    kmod=$(nevr_of "$kmod")
+    if [[ $lock == pair.lock ]]; then
+        kmod=$(only_built 'kmod-nvidia-*.rpm')
+        kmod=$(nevr_of "$kmod")
+    fi
     certificate=$(sha256sum -- "$key_dir/signing_key.x509" | awk '{print $1}')
     mkdir -p -- "$out/rpms"
-    find "$topdir/RPMS" -type f -name '*.rpm' -exec cp -t "$out/rpms" -- {} +
+    if [[ -n $kmod ]]; then
+        find "$topdir/RPMS" -type f -name '*.rpm' -exec cp -t "$out/rpms" -- {} +
+    else
+        find "$topdir/RPMS" -type f -name '*.rpm' ! -name 'kmod-nvidia-*' -exec cp -t "$out/rpms" -- {} +
+    fi
     {
         printf 'kernel=%s\n' "$kernel"
-        printf 'kmod=%s\n' "$kmod"
+        [[ -z $kmod ]] || printf 'kmod=%s\n' "$kmod"
         printf 'module_cert_sha256=%s\n' "$certificate"
         for rpm in "$out"/rpms/*.rpm; do
             printf 'rpm=%s %s\n' "${rpm##*/}" "$(sha256sum -- "$rpm" | awk '{print $1}')"
         done
-    } >"$out/pair.lock.tmp"
-    mv -- "$out/pair.lock.tmp" "$out/pair.lock"
+    } >"$out/$lock.tmp"
+    mv -- "$out/$lock.tmp" "$out/$lock"
     cp -- "$key_dir/signing_key.x509" "$out/signing_key.x509"
-    printf 'ok wrote %s\n' "$out/pair.lock"
+    printf 'ok wrote %s\n' "$out/$lock"
 }
 
 main() {
@@ -207,10 +217,17 @@ main() {
     done
     make_key "$release"
     build_kernel
-    build_kmod
+    local kmod_built=1
+    build_kmod || kmod_built=0
     "$here/module-key.sh" shred "$key_dir" || cannot "module-key.sh could not shred the job's key"
-    run_checks
-    write_lock
+    if ((kmod_built)); then
+        run_checks pair
+        write_lock pair.lock
+    else
+        run_checks kernel
+        write_lock kernel.lock
+        hold_with_log "$out/kmod.log" "kmod: $kmod_srpm does not build for this kernel"
+    fi
 }
 
 main "$@"

@@ -40,6 +40,14 @@ kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h 
 - OUT gets `pair.lock` (`kernel=`, `kmod=` with their NEVRAs, `module_cert_sha256=`,
   one `rpm=FILE SHA256` per built RPM), the RPMs under `rpms/`, the certificate and
   one log per stage.
+- A kmod failure still leaves a kernel the lane can ship as `degraded=nvidia`: after
+  the shred, `check.sh` runs with `CHECK_SCOPE=kernel` (the kernel-side checks, any
+  kmod RPM ignored, and `kernel-uname-r` from `kernel-cachyos-core`), and OUT gets
+  `kernel.lock`, which is `pair.lock` without the `kmod=` line, and the kernel RPMs
+  alone. The exit stays 1 with the `kmod:` reason. A failed kernel check gives a
+  `check:` reason and no `kernel.lock`. On 2026-10-24 `CHECK_SCOPE=kernel` passed on
+  the COPR's own 7.3.0-4 RPMs, with their built-in certificate as `MODULE_CERT`:
+  6,553 in-tree modules signed (7.2.8 had 6,491).
 - The selftest runs it against fake rpm tools, a fake kmod build and a fake
   `check.sh`. On 2026-10-24 it also ran in a `fedora:45` container on the real mirror
   of 7.3.0-4 and 615.78.08 up to `rpmbuild -bb`, which was stubbed: the inputs

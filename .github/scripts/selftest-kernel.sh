@@ -76,13 +76,14 @@ EOF
 cat >"$P/kernel/kmod-build.sh" <<'EOF'
 #!/usr/bin/env bash
 [[ -s $3/signing_key.pem ]] || { echo "no module key"; exit 1; }
-((${FAKE_KMOD_RC:-0} == 0)) || { echo "fake kmod failure"; exit "$FAKE_KMOD_RC"; }
 printf 'nevr=kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-3:615.78.08-1.fc45.x86_64\n' \
     >"$4/RPMS/x86_64/kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-615.78.08-1.fc45.x86_64.rpm"
+((${FAKE_KMOD_RC:-0} == 0)) || { echo "fake kmod failure after a partial RPM"; exit "$FAKE_KMOD_RC"; }
 EOF
 cat >"$P/kernel/check.sh" <<'EOF'
 #!/usr/bin/env bash
 [[ -s $MODULE_CERT ]] || { echo "not ok: no certificate" >&2; exit 2; }
+printf '%s\n' "${CHECK_SCOPE:-unset}" >>"$FAKE_SCOPE_LOG"
 [[ ! -e ${MODULE_CERT%/*}/signing_key.pem ]] || { echo "not ok: the private key is still there" >&2; exit 1; }
 ((${FAKE_CHECK_RC:-0} == 0)) || { echo "not ok: fake check failure" >&2; exit "$FAKE_CHECK_RC"; }
 echo ok
@@ -113,7 +114,7 @@ run_pair() {
     PAIR_KEY=$(mktemp -d -p "$SHM")
     PAIR_OUT=$(mktemp -d -p "$P")
     PAIR_RC=0
-    env PATH="$P/bin:$PATH" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY" PAIR_ID=selftest "$@" \
+    env PATH="$P/bin:$PATH" FAKE_SCOPE_LOG="$PAIR_OUT/scope" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY" PAIR_ID=selftest "$@" \
         "$P/kernel/pair.sh" "$P/mirror" "$PAIR_OUT" --repo=fedora >"$PAIR_OUT/stdout" 2>"$PAIR_OUT/stderr" || PAIR_RC=$?
     PAIR_LAST=$(tail -n 1 "$PAIR_OUT/stderr")
 }
@@ -130,17 +131,36 @@ check "pair.lock holds the module certificate's fingerprint" "$(sha_of "$PAIR_KE
     "$(sed -n 's/^module_cert_sha256=//p' "$PAIR_OUT/pair.lock")"
 check "pair.lock holds every RPM's sha256" 5 "$(grep -cE '^rpm=[^ ]+\.rpm [0-9a-f]{64}$' "$PAIR_OUT/pair.lock")"
 check_true "pair: the key is shredded after a good pair" shredded
+check "pair: a good pair checks the whole pair" pair "$(cat "$PAIR_OUT/scope")"
+check_false "pair: a good pair writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
 
 run_pair FAKE_KMOD_RC=1
 check "pair: a kmod failure holds the pair" 1 "$PAIR_RC"
 check_true "pair: a kmod failure's reason starts with kmod:" grep -q '^kmod: ' <<<"$PAIR_LAST"
 check_true "pair: the key is shredded after a kmod failure" shredded
 check_false "pair: a kmod failure writes no pair.lock" test -e "$PAIR_OUT/pair.lock"
+check "pair: a kmod failure checks the kernel alone" kernel "$(cat "$PAIR_OUT/scope")"
+check "kernel.lock names the kernel" kernel-cachyos-0:7.3.0-4.cachyos1.fc45.x86_64 \
+    "$(sed -n 's/^kernel=//p' "$PAIR_OUT/kernel.lock")"
+check_false "kernel.lock has no kmod line" grep -q '^kmod=' "$PAIR_OUT/kernel.lock"
+check_false "kernel.lock names no kmod RPM" grep -q 'kmod-nvidia' "$PAIR_OUT/kernel.lock"
+check "kernel.lock holds the module certificate's fingerprint" "$(sha_of "$PAIR_KEY/signing_key.x509")" \
+    "$(sed -n 's/^module_cert_sha256=//p' "$PAIR_OUT/kernel.lock")"
+check "kernel.lock holds the four kernel RPMs" 4 "$(grep -cE '^rpm=kernel-cachyos[^ ]*\.rpm [0-9a-f]{64}$' "$PAIR_OUT/kernel.lock")"
+check "pair: a kmod failure copies the kernel RPMs alone" 4 "$(find "$PAIR_OUT/rpms" -name 'kernel-cachyos*.rpm' | wc -l)"
+check_false "pair: a kmod failure copies no kmod RPM" test -n "$(find "$PAIR_OUT/rpms" -name 'kmod-nvidia*')"
+
+run_pair FAKE_KMOD_RC=1 FAKE_CHECK_RC=1
+check "pair: a kmod failure with a failed kernel check holds the pair" 1 "$PAIR_RC"
+check "pair: the failed kernel check is the reason" "check: not ok: fake check failure" "$PAIR_LAST"
+check_false "pair: a failed kernel check writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
+check_true "pair: the key is shredded after a kmod and a kernel check failure" shredded
 
 run_pair FAKE_RPMBUILD_RC=1
 check "pair: a kernel failure holds the pair" 1 "$PAIR_RC"
 check_true "pair: a kernel failure's reason starts with kernel:" grep -q '^kernel: ' <<<"$PAIR_LAST"
 check_true "pair: the key is shredded after a kernel failure" shredded
+check_false "pair: a kernel failure writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
 
 run_pair FAKE_CHECK_RC=1
 check "pair: a failed check holds the pair" 1 "$PAIR_RC"
@@ -291,3 +311,6 @@ rm "$B/http/$(printf '%s' "$NEG/x86_64/repodata/repomd.xml" | tr -c 'A-Za-z0-9._
 check "bump: an unreadable source means it cannot run" 2 \
     "$(PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" rc_of "$B/kernel/bump.sh" check)"
 check "bump: never edits the env files" "$BUMP_ENV_SHA" "$(cat "$B/kernel/kernel.env" "$B/kernel/nvidia.env" | sha256sum)"
+
+check "check.sh: an unknown CHECK_SCOPE means it cannot run" 2 \
+    "$(RPMS_DIR=$TMP CHECK_WORK=$TMP/cw MODULE_CERT=$TMP/none CHECK_SCOPE=both rc_of "$KERNEL_SRC/check.sh")"
