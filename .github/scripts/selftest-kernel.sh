@@ -141,10 +141,11 @@ check "pair.lock holds every RPM's sha256" 5 "$(grep -cE '^rpm=[^ ]+\.rpm [0-9a-
 check_true "pair: the key is shredded after a good pair" shredded
 check "pair: a good pair checks the whole pair" pair "$(cat "$PAIR_OUT/scope")"
 check_false "pair: a good pair writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
-check "pair: OUT keeps vmlinux from the build tree" "fake vmlinux" "$(cat "$PAIR_OUT/vmlinux")"
-check "pair: OUT keeps System.map" "fake System.map" "$(cat "$PAIR_OUT/System.map")"
-check "pair: OUT keeps the kernel config" CONFIG_FAKE=y "$(cat "$PAIR_OUT/config")"
-check "pair: OUT keeps the kernel build log" "fake rpmbuild log" "$(cat "$PAIR_OUT/kernel.log")"
+check "pair: OUT/debug keeps vmlinux from the build tree" "fake vmlinux" "$(cat "$PAIR_OUT/debug/vmlinux")"
+check "pair: OUT/debug keeps System.map" "fake System.map" "$(cat "$PAIR_OUT/debug/System.map")"
+check "pair: OUT/debug keeps the kernel config" CONFIG_FAKE=y "$(cat "$PAIR_OUT/debug/config")"
+check "pair: OUT/debug keeps the kernel build log" "fake rpmbuild log" "$(cat "$PAIR_OUT/debug/kernel.log")"
+check_false "pair: the kept files are only under OUT/debug" test -e "$PAIR_OUT/vmlinux" -o -e "$PAIR_OUT/kernel.log"
 check "pair: the build tree is gone after the copy" "" "$(find "$PAIR_OUT/tmp" -name vmlinux)"
 
 run_pair FAKE_KMOD_RC=1
@@ -163,7 +164,7 @@ check "kernel.lock holds the four kernel RPMs" 4 "$(grep -cE '^rpm=kernel-cachyo
 check "pair: a kmod failure copies the kernel RPMs alone" 4 "$(find "$PAIR_OUT/rpms" -name 'kernel-cachyos*.rpm' | wc -l)"
 check_false "pair: a kmod failure copies no kmod RPM" test -n "$(find "$PAIR_OUT/rpms" -name 'kmod-nvidia*')"
 check_true "pair: a kmod failure keeps vmlinux, System.map, config and the log" \
-    test -s "$PAIR_OUT/vmlinux" -a -s "$PAIR_OUT/System.map" -a -s "$PAIR_OUT/config" -a -s "$PAIR_OUT/kernel.log"
+    test -s "$PAIR_OUT/debug/vmlinux" -a -s "$PAIR_OUT/debug/System.map" -a -s "$PAIR_OUT/debug/config" -a -s "$PAIR_OUT/debug/kernel.log"
 
 run_pair FAKE_KMOD_RC=1 FAKE_CHECK_RC=1
 check "pair: a kmod failure with a failed kernel check holds the pair" 1 "$PAIR_RC"
@@ -176,8 +177,8 @@ check "pair: a kernel failure holds the pair" 1 "$PAIR_RC"
 check_true "pair: a kernel failure's reason starts with kernel:" grep -q '^kernel: ' <<<"$PAIR_LAST"
 check_true "pair: the key is shredded after a kernel failure" shredded
 check_false "pair: a kernel failure writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
-check_false "pair: a kernel failure keeps no vmlinux" test -e "$PAIR_OUT/vmlinux"
-check_true "pair: a kernel failure keeps its log" test -s "$PAIR_OUT/kernel.log"
+check_false "pair: a kernel failure keeps no vmlinux" test -e "$PAIR_OUT/debug/vmlinux"
+check_true "pair: a kernel failure keeps its log" test -s "$PAIR_OUT/debug/kernel.log"
 
 run_pair FAKE_CHECK_RC=1
 check "pair: a failed check holds the pair" 1 "$PAIR_RC"

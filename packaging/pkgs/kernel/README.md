@@ -40,11 +40,13 @@ kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h 
 - OUT gets `pair.lock` (`kernel=`, `kmod=` with their NEVRAs, `module_cert_sha256=`,
   one `rpm=FILE SHA256` per built RPM), the RPMs under `rpms/`, the certificate
   `signing_key.x509` and one log per stage.
-- Once the kernel has built, whatever happens after, OUT also holds the files the
-  store keeps for a pair: `vmlinux` (with DWARF, from the build tree), `System.map`,
-  `config` (the built `.config`) and `kernel.log` (the `rpmbuild -bb` output).
-  `rpmbuild --noclean` leaves the tree for the copy; `pair.sh` then deletes it, before
-  the kmod build. `-devel` is `rpms/kernel-cachyos-devel-*.rpm`.
+- Once the kernel has built, whatever happens after, `OUT/debug/` holds the files the
+  store keeps for a pair: `debug/vmlinux` (with DWARF, from the build tree),
+  `debug/System.map`, `debug/config` (the built `.config`) and `debug/kernel.log` (the
+  `rpmbuild -bb` output, there after a kernel failure too). `rpmbuild --noclean`
+  leaves the tree for the copy; `pair.sh` then deletes it, before the kmod build.
+  `-devel` is `rpms/kernel-cachyos-devel-*.rpm`. The other stage logs stay at the top
+  of OUT.
 - A kmod failure still leaves a kernel the lane can ship as `degraded=nvidia`: after
   the shred, `check.sh` runs with `CHECK_SCOPE=kernel` (the kernel-side checks, any
   kmod RPM ignored, and `kernel-uname-r` from `kernel-cachyos-core`), and OUT gets
@@ -406,7 +408,7 @@ requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
   report can say so, and the content key still changes.
 - Keep `vmlinux` before rpmbuild drops it: rpm 6.1 runs `rmbuild` after `-bb` and
   `--rebuild`, so the build tree is gone when the job ends. `pair.sh` passes
-  `--noclean` and copies it to OUT.
+  `--noclean` and copies it to `OUT/debug/`.
 - Install `perl-Math-BigInt`, `file`, `diffutils`, `binutils`, `kmod` and `cpio` before
   `check.sh`.
 - Add the two gates of ARCHITECTURE 4.2 that `check.sh` does not run yet: BTF present,
