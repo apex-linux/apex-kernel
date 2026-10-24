@@ -98,23 +98,15 @@ for f in kernel.env nvidia.env; do
 done
 check "kernel.env keys" "chroot copr copr_key copr_key_expires srpm srpm_sha256 tag tag_key tag_key_expires tag_key_url tag_repo " \
     "$(env_keys "$K/kernel.env")"
-check "nvidia.env keys" "kmod_srpm kmod_srpm_sha256 negativo17_key negativo17_key_expires userspace " \
-    "$(env_keys "$K/nvidia.env")"
 for key in srpm srpm_sha256 copr_key copr_key_expires tag tag_key tag_key_expires tag_repo tag_key_url; do
     check "kernel.env: one $key" 1 "$(env_values "$K/kernel.env" "$key" | wc -l)"
 done
-for key in kmod_srpm kmod_srpm_sha256 negativo17_key negativo17_key_expires; do
-    check "nvidia.env: one $key" 1 "$(env_values "$K/nvidia.env" "$key" | wc -l)"
-done
 
 check_true "kernel.env: srpm_sha256 is 64 hex digits" is_sha256 "$(env_values "$K/kernel.env" srpm_sha256)"
-check_true "nvidia.env: kmod_srpm_sha256 is 64 hex digits" is_sha256 "$(env_values "$K/nvidia.env" kmod_srpm_sha256)"
 for key in copr_key tag_key; do
     check_true "kernel.env: $key is a fingerprint" is_fingerprint "$(env_values "$K/kernel.env" "$key")"
     check_true "kernel.env: ${key}_expires is a date" is_date "$(env_values "$K/kernel.env" "${key}_expires")"
 done
-check_true "nvidia.env: negativo17_key is a fingerprint" is_fingerprint "$(env_values "$K/nvidia.env" negativo17_key)"
-check_true "nvidia.env: negativo17_key_expires is a date" is_date "$(env_values "$K/nvidia.env" negativo17_key_expires)"
 
 check_true "kernel.env: tag_repo is an https git URL" \
     grep -qxE 'https://[^ ]+\.git' <<<"$(env_values "$K/kernel.env" tag_repo)"
@@ -130,22 +122,34 @@ else
     flunk "kernel.env: srpm '$kernel_srpm' is not a kernel-cachyos fc45 SRPM NEVRA"
 fi
 
-kmod_version=$(env_values "$K/nvidia.env" kmod_srpm | sed -n 's/^nvidia-kmod-3:\([0-9.]*\)-[0-9]*\.fc45\.src$/\1/p')
-check_false "nvidia.env: kmod_srpm is an nvidia-kmod fc45 SRPM NEVRA" test -z "$kmod_version"
-userspace_count=0
-while read -r nevra sha256 rest; do
-    userspace_count=$((userspace_count + 1))
-    check_true "nvidia.env: $nevra sha256 is 64 hex digits" is_sha256 "$sha256"
-    check "nvidia.env: $nevra has two fields" "" "$rest"
-    check_true "nvidia.env: $nevra is an fc45 NEVRA" \
-        test -n "$(sed -n '/^[a-z0-9-]*-[0-9]*:[^-]*-[^-]*\.fc45\.\(x86_64\|noarch\)$/p' <<<"$nevra")"
-    case $nevra in
-        nvidia-driver-selinux-*) ;;
-        *) check "nvidia.env: $nevra is the kmod's driver version" "$kmod_version" \
-            "$(sed -n 's/^.*-3:\([0-9.]*\)-.*$/\1/p' <<<"$nevra")" ;;
-    esac
-done < <(env_values "$K/nvidia.env" userspace)
-check_false "nvidia.env: at least one userspace RPM" test "$userspace_count" -eq 0
+check_nvidia_env() {
+    local file=$1 what=$2 key kmod_version userspace_count=0 nevra sha256 rest
+    check "$what keys" "kmod_srpm kmod_srpm_sha256 negativo17_key negativo17_key_expires soak_days userspace " \
+        "$(env_keys "$file")"
+    for key in kmod_srpm kmod_srpm_sha256 negativo17_key negativo17_key_expires soak_days; do
+        check "$what: one $key" 1 "$(env_values "$file" "$key" | wc -l)"
+    done
+    check_true "$what: kmod_srpm_sha256 is 64 hex digits" is_sha256 "$(env_values "$file" kmod_srpm_sha256)"
+    check_true "$what: negativo17_key is a fingerprint" is_fingerprint "$(env_values "$file" negativo17_key)"
+    check_true "$what: negativo17_key_expires is a date" is_date "$(env_values "$file" negativo17_key_expires)"
+    check_true "$what: soak_days is a number of days" grep -qxE '[1-9][0-9]*' <<<"$(env_values "$file" soak_days)"
+    kmod_version=$(env_values "$file" kmod_srpm | sed -n 's/^nvidia-kmod-3:\([0-9.]*\)-[0-9]*\.fc45\.src$/\1/p')
+    check_false "$what: kmod_srpm is an nvidia-kmod fc45 SRPM NEVRA" test -z "$kmod_version"
+    while read -r nevra sha256 rest; do
+        userspace_count=$((userspace_count + 1))
+        check_true "$what: $nevra sha256 is 64 hex digits" is_sha256 "$sha256"
+        check "$what: $nevra has two fields" "" "$rest"
+        check_true "$what: $nevra is an fc45 NEVRA" \
+            test -n "$(sed -n '/^[a-z0-9-]*-[0-9]*:[^-]*-[^-]*\.fc45\.\(x86_64\|noarch\)$/p' <<<"$nevra")"
+        case $nevra in
+            nvidia-driver-selinux-*) ;;
+            *) check "$what: $nevra is the kmod's driver version" "$kmod_version" \
+                "$(sed -n 's/^.*-3:\([0-9.]*\)-.*$/\1/p' <<<"$nevra")" ;;
+        esac
+    done < <(env_values "$file" userspace)
+    check_false "$what: at least one userspace RPM" test "$userspace_count" -eq 0
+}
+check_nvidia_env "$K/nvidia.env" nvidia.env
 
 # --- .gitignore: biometric data never gets tracked -------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG var/lib/fprint/u/1; do
