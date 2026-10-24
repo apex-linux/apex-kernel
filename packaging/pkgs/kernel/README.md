@@ -16,13 +16,13 @@ neither `apex-lane` nor `image.sh` sees a kernel family yet.
 | `module-key.sh` | `generate DIR CN`: an ECDSA P-384 key and its certificate on a tmpfs, the kernel's own certificate extensions; `shred DIR`: the private key goes, the DER certificate stays |
 | `kmod-build.sh` | in the container that built the kernel: installs its `kernel-cachyos-devel`, checks the GCC major, rebuilds the `nvidia-kmod` SRPM unmodified with `--define 'kernels <uname -r>'` and kmodtool's signing macros |
 | `pair.sh` | the pair job, run as root in one fresh `fedora:45` container: verifies every pinned input of the mirror, makes the key, builds the kernel (ccache when `CCACHE_DIR` is set) and the kmod, shreds the key, runs `check.sh`, writes `pair.lock`; [the contract below](#the-pair-job) |
-| `bump.sh` | `bump.sh check`: `point`, `major … waiting-for-owner EOL-in-Nd` or `none` from the COPR and kernel.org, then the newest negativo17 builds of the pinned NVIDIA branch; edits nothing |
+| `bump.sh` | `bump.sh check`: `point`, `major … waiting-for-owner EOL-in-Nd` or `none` from the COPR and kernel.org, then the newest negativo17 builds of the pinned NVIDIA branch with their soak; `bump.sh nvidia-env`: the candidate `nvidia.env` of a driver bump, on stdout ([Driver bump](#driver-bump)); edits nothing |
 | `source-check.sh` | `source-check.sh DIR`: checks a pair's public source set ([below](#the-public-source-set)); exit 1 names what is missing or wrong, exit 2 means it could not run |
 | `check.sh` | the lane checks of a pair (the lane's `check.sh` contract, plus `MODULE_CERT`): `config-required.txt`, the certificate built into `vmlinuz`, the signer of every module, the NVIDIA signatures verified with `openssl cms`, `kernel-uname-r`, no private key in a payload |
 | `config-required.txt` | the config lines ADR 0015 relies on, compared verbatim |
 | `patches/` | the ALC294 quirk, out of any series (ADR 0015, section 8) |
 | `kernel.env` | the COPR, chroot, SRPM NEVRA and sha256, the COPR key; the CachyOS tag, the repository it is verified from (`tag_repo`, the one K1 step 5 used) and its key, with the key's keys.openpgp.org URL (`tag_key_url`; keyserver.ubuntu.com serves the same key); `KEY=VALUE`, never sourced |
-| `nvidia.env` | the `nvidia-kmod` SRPM and each userspace RPM with NEVRA and sha256, the negativo17 key; the same format |
+| `nvidia.env` | the `nvidia-kmod` SRPM and each userspace RPM with NEVRA and sha256, the negativo17 key, and `soak_days` (7; `bump.sh` uses 7 when the key is absent); the same format |
 
 ## The pair job
 
@@ -107,6 +107,28 @@ the lane takes the point unattended, and the major line keeps the owner's EOL co
 in view. The pinned major's EOL counts 0 days once kernel.org lists it as EOL
 or drops it, and otherwise 16 days after the next major's release (ROADMAP's 7.1 and
 7.2), or `unknown` when releases.json no longer shows that date.
+
+## Driver bump
+
+ROADMAP N8. `bump.sh` makes the data side mechanical; the owner's laptop run stays a
+person's. In order:
+
+1. `bump.sh check` prints `nvidia NEVRA SHA256 newer soaking-Nd` for a newer build of
+   the pinned branch, and `newer soaked` once its repodata build time is `soak_days`
+   (`nvidia.env`, 7 when absent) old. A new branch is not offered: a branch change is
+   a pin edit by hand, for the owner.
+2. When every newer line reads `soaked`, `bump.sh nvidia-env` prints the candidate
+   `nvidia.env`: `kmod_srpm`, `kmod_srpm_sha256` and each `userspace` line moved to the
+   newest build of the branch, every other line as it was. It refuses, with exit 1 and
+   the reason on the last line, while a package is missing, still soaking, older than
+   its pin, or of another driver version than the kmod.
+3. The lane's bump PR writes that output to `nvidia.env` unchanged; the selftest checks
+   it like any pin.
+4. The whole pair rebuilds: a driver bump rebuilds the kernel too, from a warm ccache
+   (ARCHITECTURE 4.2).
+5. The owner runs ACCEPTANCE §4 from the staged deployment on the laptop.
+6. Then the image publishes. That the Flathub `GL.nvidia` extension of the same version
+   exists is `apex-flatpak-update`'s check (ROADMAP S1d), not this one's.
 
 ## K1, 2026-10-02
 

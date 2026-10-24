@@ -355,8 +355,13 @@ chroot=fedora-45-x86_64
 srpm=kernel-cachyos-0:7.3.0-4.cachyos1.fc45.src
 EOF
 cat >"$B/kernel/nvidia.env" <<'EOF'
+# the selftest's pins
 kmod_srpm=nvidia-kmod-3:615.78.08-1.fc45.src
+kmod_srpm_sha256=2a16e83c24605b0f3c436caacb133c7b1b7724b105ed7c970ddf1a6809668532
 userspace=nvidia-driver-3:615.78.08-1.fc45.x86_64 2099da1e492b1abf2651c49b1a98f27ca215517bdddad06438769d0e25d2a6e4
+negativo17_key=0C5D0F470484AE2FC40A9B6597F3008993E8909B
+negativo17_key_expires=2029-08-31
+soak_days=7
 EOF
 http "$COPR_API/build/list/?ownername=bieszczaders&projectname=kernel-cachyos&packagename=kernel-cachyos&limit=30" <<'EOF'
 {"items": [
@@ -391,22 +396,29 @@ repo() {
   </data>
 </repomd>
 EOF
-    local name arch epoch ver rel sum
-    while read -r name arch epoch ver rel sum; do
-        printf '<package type="rpm">\n  <name>%s</name>\n  <arch>%s</arch>\n  <version epoch="%s" ver="%s" rel="%s"/>\n  <checksum type="sha256" pkgid="YES">%s</checksum>\n</package>\n' \
-            "$name" "$arch" "$epoch" "$ver" "$rel" "$sum"
+    local name arch epoch ver rel sum built
+    while read -r name arch epoch ver rel sum built; do
+        printf '<package type="rpm">\n  <name>%s</name>\n  <arch>%s</arch>\n  <version epoch="%s" ver="%s" rel="%s"/>\n  <checksum type="sha256" pkgid="YES">%s</checksum>\n  <time file="%s" build="%s"/>\n</package>\n' \
+            "$name" "$arch" "$epoch" "$ver" "$rel" "$sum" "$built" "$built"
     done <<<"$*" | gzip -c >"$B/http/$(printf '%s' "$NEG/$dir/repodata/x-primary.xml.gz" | tr -c 'A-Za-z0-9._-' '_')"
 }
 SUM_A=$(printf 'a%.0s' {1..64})
 SUM_B=$(printf 'b%.0s' {1..64})
-repo SRPMS "nvidia-kmod src 3 615.78.08 1.fc45 $SUM_A
-nvidia-kmod src 3 615.80.01 1.fc45 $SUM_B
-nvidia-kmod src 3 620.10 1.fc45 $SUM_A"
-repo x86_64 "nvidia-driver x86_64 3 615.78.08 1.fc45 2099da1e492b1abf2651c49b1a98f27ca215517bdddad06438769d0e25d2a6e4
-nvidia-driver i686 3 615.80.01 1.fc45 $SUM_B
-nvidia-driver x86_64 3 620.10 1.fc45 $SUM_B"
+SUM_C=$(printf 'c%.0s' {1..64})
+BUMP_AT=$((MAINLINE_74 + 6 * 86400))
+days_ago() { printf '%d' $((BUMP_AT - $1 * 86400)); }
+repo SRPMS "nvidia-kmod src 3 615.78.08 1.fc45 $SUM_A $(days_ago 40)
+nvidia-kmod src 3 615.80.01 1.fc45 $SUM_B $(days_ago 8)
+nvidia-kmod src 3 620.10 1.fc45 $SUM_A $(days_ago 1)"
+x86_64_repo() {
+    repo x86_64 "nvidia-driver x86_64 3 615.78.08 1.fc45 2099da1e492b1abf2651c49b1a98f27ca215517bdddad06438769d0e25d2a6e4 $(days_ago 40)
+nvidia-driver i686 3 615.80.01 1.fc45 $SUM_B $(days_ago 8)
+nvidia-driver x86_64 3 620.10 1.fc45 $SUM_B $(days_ago 1)${1:+
+$1}"
+}
+x86_64_repo
 
-bump() { PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" BUMP_NOW=$((MAINLINE_74 + 6 * 86400)) "$B/kernel/bump.sh" check 2>&1; }
+bump() { PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" BUMP_NOW=$BUMP_AT "$B/kernel/bump.sh" check 2>&1; }
 
 chroot_state 250 succeeded
 chroot_state 300 succeeded
@@ -415,7 +427,7 @@ check "bump: a point and a major bump both print, the point first" \
     "point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src
 major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-10d" "$(grep -v '^nvidia ' <<<"$BUMP")"
 check "bump: the newest kmod of the pinned branch" \
-    "nvidia nvidia-kmod-3:615.80.01-1.fc45.src $SUM_B newer" "$(grep '^nvidia ' <<<"$BUMP" | sed -n 1p)"
+    "nvidia nvidia-kmod-3:615.80.01-1.fc45.src $SUM_B newer soaked" "$(grep '^nvidia ' <<<"$BUMP" | sed -n 1p)"
 check "bump: a userspace package still at its pin" \
     "nvidia nvidia-driver-3:615.78.08-1.fc45.x86_64 2099da1e492b1abf2651c49b1a98f27ca215517bdddad06438769d0e25d2a6e4 pinned" \
     "$(grep '^nvidia ' <<<"$BUMP" | sed -n 2p)"
@@ -467,4 +479,49 @@ check "spec: modules %posttrans is depmod alone" '    /sbin/depmod -a %{_kver}' 
 check_false "spec: core has no %preun" grep -qx '%preun core' <<<"$SPEC"
 check_false "spec: no scriptlet runs kernel-install or dracut" \
     grep -qE '^[[:space:]]+(/bin/kernel-install|dracut -f)' <<<"$SPEC"
+
+# --- bump.sh nvidia-env: the driver bump's candidate pins ----------------------------
+nvidia_env_out() { PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" BUMP_NOW=$BUMP_AT "$B/kernel/bump.sh" nvidia-env 2>"$B/stderr"; }
+nvidia_env_rc() { local rc=0; nvidia_env_out >/dev/null || rc=$?; printf '%s' "$rc"; }
+
+x86_64_repo "nvidia-driver x86_64 3 615.80.01 1.fc45 $SUM_C $(days_ago 2)"
+check "bump: a driver build of 2 days soaks 5 more" \
+    "nvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 $SUM_C newer soaking-5d" "$(bump | grep '^nvidia nvidia-driver-')"
+check "nvidia-env: refuses while a build soaks" 1 "$(nvidia_env_rc)"
+check "nvidia-env: names the soaking build" "bump.sh: nvidia-driver-3:615.80.01-1.fc45.x86_64 is still 5d from soaked" \
+    "$(tail -n 1 "$B/stderr")"
+
+x86_64_repo "nvidia-driver x86_64 3 615.80.01 1.fc45 $SUM_C $(days_ago 7)"
+check "bump: a build exactly soak_days old is soaked" \
+    "nvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 $SUM_C newer soaked" "$(bump | grep '^nvidia nvidia-driver-')"
+nvidia_env_out >"$B/candidate.env"
+check "nvidia-env: prints the candidate once all is soaked" 0 "$(nvidia_env_rc)"
+check "nvidia-env: the kmod moves to the branch's newest" "kmod_srpm=nvidia-kmod-3:615.80.01-1.fc45.src
+kmod_srpm_sha256=$SUM_B" "$(grep '^kmod_srpm' "$B/candidate.env")"
+check "nvidia-env: the userspace moves with it" "userspace=nvidia-driver-3:615.80.01-1.fc45.x86_64 $SUM_C" \
+    "$(grep '^userspace=' "$B/candidate.env")"
+check "nvidia-env: every other line is kept" "$(grep -vE '^(kmod_srpm|kmod_srpm_sha256|userspace)=' "$B/kernel/nvidia.env")" \
+    "$(grep -vE '^(kmod_srpm|kmod_srpm_sha256|userspace)=' "$B/candidate.env")"
+check_nvidia_env "$B/candidate.env" "nvidia-env's candidate"
+
+sed -i 's/^soak_days=7$/soak_days=10/' "$B/kernel/nvidia.env"
+check "bump: soak_days comes from nvidia.env" \
+    "nvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 $SUM_C newer soaking-3d" "$(bump | grep '^nvidia nvidia-driver-')"
+sed -i '/^soak_days=/d' "$B/kernel/nvidia.env"
+check "bump: soak_days is 7 without the key" \
+    "nvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 $SUM_C newer soaked" "$(bump | grep '^nvidia nvidia-driver-')"
+printf 'soak_days=0\n' >>"$B/kernel/nvidia.env"
+check "bump: soak_days must be a number of days" 2 "$(nvidia_env_rc)"
+sed -i 's/^soak_days=0$/soak_days=7/' "$B/kernel/nvidia.env"
+
+x86_64_repo "nvidia-driver x86_64 3 615.79.00 1.fc45 $SUM_C $(days_ago 9)"
+check "nvidia-env: refuses a userspace of another driver" 1 "$(nvidia_env_rc)"
+check "nvidia-env: names the mismatch" "bump.sh: nvidia-driver-3:615.79.00-1.fc45.x86_64 is not driver 615.80.01, the kmod's" \
+    "$(tail -n 1 "$B/stderr")"
+
+repo x86_64 "nvidia-driver x86_64 3 620.10 1.fc45 $SUM_B $(days_ago 1)"
+check "bump: no build of the pinned branch is missing" "nvidia nvidia-driver missing" "$(bump | grep '^nvidia nvidia-driver')"
+check "nvidia-env: refuses a missing package" 1 "$(nvidia_env_rc)"
+check "nvidia-env: names the missing package" "bump.sh: nvidia-driver has no build of the pinned branch" "$(tail -n 1 "$B/stderr")"
+x86_64_repo
 
