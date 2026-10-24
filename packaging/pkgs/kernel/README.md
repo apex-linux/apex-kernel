@@ -10,7 +10,9 @@ neither `apex-lane` nor `image.sh` sees a kernel family yet.
 
 | File | Role |
 |---|---|
-| `kernel-spec.patch` | the one spec change the pair needs: `CONFIG_MODULE_SIG_KEY` names the job's key (`--define 'apex_module_sig_key PATH'`); the build stops without the define |
+| `kernel-spec.patch` | ADR 0015 §1's build-mechanics hunks, made against the 7.3.0-4 spec: `Release: %{_cachyos_release}.cachyos1.apex%{apex_release}%{?dist}`; `_disable_source_fetch 1`; after `%autopatch`, the patches `series` names, with `patch -p1 --fuzz=0`; `MODULE_SIG_KEY` names the job's key; core `%posttrans` and modules `%posttrans` reduced to `depmod -a`, core `%preun` dropped. The defines `apex_release`, `apex_series` and `apex_module_sig_key` are each required: the spec does not parse without them |
+| `series` | the patches applied after the CachyOS ones, one file name per line relative to `series`; empty today |
+| `tests/fixtures/` | the 7.3.0-4 SRPM's `kernel-cachyos.spec` (sha256 `0edf6e56…`), which the selftest patches with `kernel-spec.patch` |
 | `module-key.sh` | `generate DIR CN`: an ECDSA P-384 key and its certificate on a tmpfs, the kernel's own certificate extensions; `shred DIR`: the private key goes, the DER certificate stays |
 | `kmod-build.sh` | in the container that built the kernel: installs its `kernel-cachyos-devel`, checks the GCC major, rebuilds the `nvidia-kmod` SRPM unmodified with `--define 'kernels <uname -r>'` and kmodtool's signing macros |
 | `pair.sh` | the pair job, run as root in one fresh `fedora:45` container: verifies every pinned input of the mirror, makes the key, builds the kernel (ccache when `CCACHE_DIR` is set) and the kmod, shreds the key, runs `check.sh`, writes `pair.lock`; [the contract below](#the-pair-job) |
@@ -23,7 +25,7 @@ neither `apex-lane` nor `image.sh` sees a kernel family yet.
 
 ## The pair job
 
-`pair.sh MIRROR OUT [DNF-OPTION...]` follows the lane's `check.sh` contract: exit 1
+`APEX_RELEASE=N pair.sh MIRROR OUT [DNF-OPTION...]` follows the lane's `check.sh` contract: exit 1
 holds the pair, with the reason on the last line; exit 2 means it could not run. A
 reason that starts with `kmod:` is a kmod failure on a kernel that built, `kernel:` a
 kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h or
@@ -408,9 +410,12 @@ requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
   suffix goes after it.
 - Install dwarves before the kmod build if the NVIDIA modules should carry BTF;
   negativo17's spec does not ask for it.
-- Apply `kernel-spec.patch`. The compose needs no spec change; the ADR's other hunks
-  (the `.apexN` release, `_disable_source_fetch 1`, the series, `%posttrans` reduced to
-  `depmod`, `CC="ccache gcc"`) were not tested here. ccache works from `PATH` without one.
+- Apply `kernel-spec.patch`, which carries all of ADR 0015 §1's hunks: `pair.sh` passes
+  `APEX_RELEASE` (the lane's N) as `apex_release` and `series` as `apex_series`. Core
+  `%post` stays as shipped, so its `rpm-state` marker is no longer removed; it is
+  harmless. `CC="ccache gcc"` is left out: ccache works from `PATH` without a spec
+  change. The hunks are checked on the spec text by the selftest and parsed by
+  `rpmspec` in `fedora:45`; a whole build with them is a builder-VM proof still owed.
 - Keep the module key at `/run/apex-modkey/signing_key.pem` in every job, so ccache hits
   directly (33 min against 15 min for the kernel).
 - Expect release-only bumps: `7.2.8-cachyos2` differs from `-cachyos1` only in its

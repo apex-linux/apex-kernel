@@ -1,0 +1,2 @@
+# Patches the pair job applies after the CachyOS ones, one file name per line,
+# relative to this file; an empty series builds the COPR kernel as shipped.

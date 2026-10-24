@@ -25,7 +25,7 @@ sha_of() { sha256sum -- "$1" | awk '{print $1}'; }
 P="$TMP/pair"
 mkdir -p "$P/bin" "$P/mirror"
 cp -r "$KERNEL_SRC" "$P/kernel"
-sed -n '/^@@/,${/^@@/d; /^+/d; s/^[ -]//; p}' "$KERNEL_SRC/kernel-spec.patch" >"$P/kernel-cachyos.spec"
+cp "$KERNEL_SRC/tests/fixtures/kernel-cachyos-7.3.0-4.cachyos1.spec" "$P/kernel-cachyos.spec"
 
 fake rpmkeys <<'EOF'
 #!/usr/bin/env bash
@@ -62,6 +62,9 @@ for ((i = 0; i < $#; i++)); do
     [[ ${args[i]} == --define && ${args[i + 1]} == "apex_module_sig_key "* ]] && key=${args[i + 1]#apex_module_sig_key }
 done
 grep -q apex_module_sig_key "${!#}" || { echo "the spec is not patched"; exit 1; }
+printf '%s\n' "$@" | grep -qx 'apex_release [1-9][0-9]*' || { echo "no apex_release define"; exit 1; }
+series=$(printf '%s\n' "$@" | sed -n 's/^apex_series //p')
+[[ -f $series ]] || { echo "no apex_series define naming a file"; exit 1; }
 [[ -s $key ]] || { echo "no module key at $key"; exit 1; }
 ((${FAKE_RPMBUILD_RC:-0} == 0)) || { echo "fake rpmbuild failure"; exit "$FAKE_RPMBUILD_RC"; }
 [[ " $* " == *" --noclean "* ]] || { echo "rpmbuild would remove the build tree"; exit 1; }
@@ -129,7 +132,7 @@ run_pair() {
     PAIR_OUT=$(mktemp -d -p "$P")
     PAIR_RC=0
     mkdir "$PAIR_OUT/tmp"
-    env PATH="$P/bin:$PATH" TMPDIR="$PAIR_OUT/tmp" FAKE_SCOPE_LOG="$PAIR_OUT/scope" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY" PAIR_ID=selftest "$@" \
+    env PATH="$P/bin:$PATH" TMPDIR="$PAIR_OUT/tmp" FAKE_SCOPE_LOG="$PAIR_OUT/scope" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY" PAIR_ID=selftest APEX_RELEASE=1 "$@" \
         "$P/kernel/pair.sh" "$P/mirror" "$PAIR_OUT" --repo=fedora >"$PAIR_OUT/stdout" 2>"$PAIR_OUT/stderr" || PAIR_RC=$?
     PAIR_LAST=$(tail -n 1 "$PAIR_OUT/stderr")
 }
@@ -138,6 +141,8 @@ shredded() { [[ ! -e $PAIR_KEY/signing_key.pem && -s $PAIR_KEY/signing_key.x509 
 
 run_pair
 check "pair: a good pair exits 0" 0 "$PAIR_RC"
+check_true "pair: the key's certificate names the .apexN release" \
+    grep -q '^subject=.*Apex kernel 7.3.0-4.cachyos1.apex1.fc45.x86_64 selftest$' "$PAIR_OUT/module-key.txt"
 check "pair.lock names the kernel" kernel-cachyos-0:7.3.0-4.cachyos1.fc45.x86_64 \
     "$(sed -n 's/^kernel=//p' "$PAIR_OUT/pair.lock")"
 check "pair.lock names the kmod" kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-3:615.78.08-1.fc45.x86_64 \
@@ -254,11 +259,20 @@ run_pair
 check "pair: a missing input means it cannot run" 2 "$PAIR_RC"
 mv "$P/good.rpm" "$P/mirror/$USERSPACE"
 
+run_pair APEX_RELEASE=
+check "pair: without APEX_RELEASE it cannot run" 2 "$PAIR_RC"
+check "pair: the missing APEX_RELEASE is named" "pair.sh cannot run: APEX_RELEASE is the N of the .apexN release, not ''" "$PAIR_LAST"
+check_false "pair: without APEX_RELEASE no key is made" test -e "$PAIR_KEY/signing_key.x509"
+run_pair APEX_RELEASE=0
+check "pair: APEX_RELEASE=0 means it cannot run" 2 "$PAIR_RC"
+run_pair APEX_RELEASE=1a
+check "pair: a non-numeric APEX_RELEASE means it cannot run" 2 "$PAIR_RC"
+
 PAIR_KEY_BUSY=$(mktemp -d -p "$SHM")
 printf 'not ours\n' >"$PAIR_KEY_BUSY/signing_key.pem"
 PAIR_OUT=$(mktemp -d -p "$P")
 check "pair: a key directory in use means it cannot run" 2 \
-    "$(rc_of env PATH="$P/bin:$PATH" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY_BUSY" \
+    "$(rc_of env PATH="$P/bin:$PATH" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY_BUSY" APEX_RELEASE=1 \
         "$P/kernel/pair.sh" "$P/mirror" "$PAIR_OUT")"
 check "pair: a key it did not make is left alone" "not ours" "$(cat "$PAIR_KEY_BUSY/signing_key.pem")"
 
@@ -369,3 +383,29 @@ check "bump: never edits the env files" "$BUMP_ENV_SHA" "$(cat "$B/kernel/kernel
 
 check "check.sh: an unknown CHECK_SCOPE means it cannot run" 2 \
     "$(RPMS_DIR=$TMP CHECK_WORK=$TMP/cw MODULE_CERT=$TMP/none CHECK_SCOPE=both rc_of "$KERNEL_SRC/check.sh")"
+
+# --- kernel-spec.patch on the 7.3.0-4 spec, as the pair job applies it -----------------
+S="$TMP/spec"
+mkdir -p "$S"
+cp "$KERNEL_SRC/tests/fixtures/kernel-cachyos-7.3.0-4.cachyos1.spec" "$S/kernel-cachyos.spec"
+check_true "kernel-spec.patch applies to the 7.3.0-4 spec with fuzz 0" \
+    patch --fuzz=0 -p1 -d "$S" -i "$KERNEL_SRC/kernel-spec.patch"
+check_false "kernel-spec.patch leaves no reject" test -e "$S/kernel-cachyos.spec.rej"
+SPEC=$(cat "$S/kernel-cachyos.spec")
+section() { awk -v h="$1" '$0 == h { on = 1; next } on && /^%/ { exit } on' <<<"$SPEC" | sed '/^[[:space:]]*$/d'; }
+check "spec: source fetching off" 1 "$(sed -n 's/^%define _disable_source_fetch //p' <<<"$SPEC")"
+check "spec: the .apexN release" '%{_cachyos_release}.cachyos1.apex%{apex_release}%{?dist}' \
+    "$(sed -n 's/^Release: *//p' <<<"$SPEC")"
+for define in apex_release apex_series apex_module_sig_key; do
+    check_true "spec: $define is required" grep -qF "%{!?$define:%{error:" <<<"$SPEC"
+done
+check "spec: the series follows the CachyOS patches" '%autopatch -p1 -v -M 9
+test -r %{apex_series}' "$(grep -A1 -xF '%autopatch -p1 -v -M 9' <<<"$SPEC")"
+check_true "spec: the series applies with fuzz 0" grep -qF "patch -p1 --fuzz=0 < \"\$(dirname %{apex_series})/\$apex_patch\"" <<<"$SPEC"
+check_true "spec: MODULE_SIG_KEY names the job's key" grep -qxF '    scripts/config --set-str MODULE_SIG_KEY %{apex_module_sig_key}' <<<"$SPEC"
+check "spec: core %posttrans is depmod alone" '    depmod -a %{_kver}' "$(section '%posttrans core')"
+check "spec: modules %posttrans is depmod alone" '    /sbin/depmod -a %{_kver}' "$(section '%posttrans modules')"
+check_false "spec: core has no %preun" grep -qx '%preun core' <<<"$SPEC"
+check_false "spec: no scriptlet runs kernel-install or dracut" \
+    grep -qE '^[[:space:]]+(/bin/kernel-install|dracut -f)' <<<"$SPEC"
+

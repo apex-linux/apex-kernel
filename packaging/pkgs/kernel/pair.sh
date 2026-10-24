@@ -8,7 +8,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: pair.sh MIRROR OUT [DNF-OPTION...]
+usage: APEX_RELEASE=N pair.sh MIRROR OUT [DNF-OPTION...]
 
 The kernel and NVIDIA pair job of ADR 0015, run as root in one fresh fedora:45
 container:
@@ -17,7 +17,8 @@ container:
      each pinned file, and its signature against a keyring that holds only its pinned
      key (MIRROR/copr.gpg for the kernel SRPM, MIRROR/negativo17.gpg for the rest);
   2. generates the job's module key on the tmpfs MODKEY_DIR (module-key.sh);
-  3. applies kernel-spec.patch and builds the kernel with rpmbuild -bb, through
+  3. applies kernel-spec.patch and builds the kernel with rpmbuild -bb, release
+     <cachyos release>.apexN, applying the patches that series names, through
      ccache when CCACHE_DIR is set; keeps OUT/debug/vmlinux, OUT/debug/System.map
      and OUT/debug/config from the build tree, then removes the tree, and holds the
      pair when vmlinux has no .BTF section;
@@ -122,14 +123,13 @@ build_kernel() {
         cannot "the kernel SRPM does not install"
     patch --fuzz=0 -p1 -d "$topdir/SPECS" <"$here/kernel-spec.patch" >"$out/spec-patch.log" 2>&1 ||
         hold_with_log "$out/spec-patch.log" "kernel: kernel-spec.patch does not apply with fuzz 0"
-    "${dnf[@]}" builddep --define "apex_module_sig_key $key_dir/signing_key.pem" "$spec" \
+    "${dnf[@]}" builddep "${spec_defines[@]}" "$spec" \
         >"$out/kernel-builddep.log" 2>&1 || cannot "dnf cannot install the kernel's BuildRequires"
     if [[ -n ${CCACHE_DIR:-} ]]; then
         "${dnf[@]}" install ccache >>"$out/dnf.log" 2>&1 || cannot "dnf cannot install ccache"
         export CCACHE_DIR PATH=/usr/lib64/ccache:$PATH
     fi
-    rpmbuild -bb --noclean --define "_topdir $topdir" \
-        --define "apex_module_sig_key $key_dir/signing_key.pem" "$spec" >"$out/debug/kernel.log" 2>&1 ||
+    rpmbuild -bb --noclean --define "_topdir $topdir" "${spec_defines[@]}" "$spec" >"$out/debug/kernel.log" 2>&1 ||
         hold_with_log "$out/debug/kernel.log" "kernel: rpmbuild -bb failed"
     printf 'ok the kernel built\n'
     keep_build_files
@@ -223,7 +223,8 @@ main() {
     (($# >= 2)) || { usage >&2; exit 2; }
     mirror=$1 out=$2
     shift 2
-    fault=${APEX_PAIR_FAULT:-}
+    fault=${APEX_PAIR_FAULT:-} apex_release=${APEX_RELEASE:-}
+    [[ $apex_release =~ ^[1-9][0-9]*$ ]] || cannot "APEX_RELEASE is the N of the .apexN release, not '$apex_release'"
     [[ -z $fault || $fault == kmod ]] || cannot "APEX_PAIR_FAULT is kmod or empty, not '$fault'"
     dnf_options=("$@")
     dnf=(dnf5 -y -q "${dnf_options[@]}")
@@ -244,7 +245,10 @@ main() {
 
     kernel_srpm=$(env_value "$kernel_env" srpm)
     kmod_srpm=$(env_value "$nvidia_env" kmod_srpm)
-    release=$(sed -E 's/^kernel-cachyos-[0-9]+:(.*)\.src$/\1/' <<<"$kernel_srpm").x86_64
+    [[ -f $here/series ]] || cannot "no series file next to pair.sh"
+    spec_defines=(--define "apex_release $apex_release" --define "apex_series $here/series"
+        --define "apex_module_sig_key $key_dir/signing_key.pem")
+    release=$(sed -E "s/^kernel-cachyos-[0-9]+:(.*)\.(fc[0-9]+)\.src$/\1.apex$apex_release.\2/" <<<"$kernel_srpm").x86_64
     verify_inputs
     "${dnf[@]}" install rpm-build dnf5-plugins patch openssl perl-Math-BigInt file diffutils binutils kmod \
         cpio xz zstd findutils >"$out/dnf.log" 2>&1 || cannot "dnf cannot install the job's tools"

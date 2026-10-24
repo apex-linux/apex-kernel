@@ -1,11 +1,42 @@
-The pair job's module key (ADR 0015): the kernel build takes the key that module-key.sh
-made on a tmpfs, builds its certificate in and signs every module with it. The pair job
-applies this with patch --fuzz=0 -p1 in SPECS/ and passes
---define 'apex_module_sig_key /run/apex-modkey/signing_key.pem'.
+The spec changes of the pair job (ADR 0015 §1): build mechanics only. The pair job
+applies this with patch --fuzz=0 -p1 in SPECS/ and passes three defines, each required:
+apex_release (N of the .apexN release), apex_series (the series file, maybe empty) and
+apex_module_sig_key (the job's module key on its tmpfs).
 
 --- a/kernel-cachyos.spec
 +++ b/kernel-cachyos.spec
-@@ -184,6 +184,9 @@
+@@ -2,7 +2,7 @@
+ %define __spec_install_post %{__os_install_post}
+ %define _build_id_links none
+ %define _default_patch_fuzz 2
+-%define _disable_source_fetch 0
++%define _disable_source_fetch 1
+ %define debug_package %{nil}
+ %define make_build make %{?_lto_args} %{?_smp_mflags}
+ %undefine __brp_mangle_shebangs
+@@ -73,7 +73,9 @@
+ Name:           kernel-cachyos%{?_lto_args:-lto}
+ Summary:        Linux BORE %{?_lto_args:+ LTO }Cachy Sauce Kernel by CachyOS with other patches and improvements.
+ Version:        %{_basekver}.%{_stablekver}
+-Release:        %{_cachyos_release}.cachyos1%{?_lto_args:.lto}%{?dist}
++%{!?apex_release:%{error:apex_release is not defined: the pair job passes the .apexN number}}
++%{!?apex_series:%{error:apex_series is not defined: the pair job passes its series file}}
++Release:        %{_cachyos_release}.cachyos1.apex%{apex_release}%{?dist}
+ License:        GPL-2.0-only
+ URL:            https://cachyos.org
+ 
+@@ -141,6 +143,10 @@
+ %prep
+ %setup -q %{?SOURCE10:-b 10} -n linux-%{_tag}
+ %autopatch -p1 -v -M 9
++test -r %{apex_series}
++sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' %{apex_series} | while read -r apex_patch; do
++    patch -p1 --fuzz=0 < "$(dirname %{apex_series})/$apex_patch"
++done
+ 
+     cp %{SOURCE1} .config
+ 
+@@ -182,6 +188,9 @@
          scripts/config -e LTO_CLANG_THIN
      %endif
  
@@ -15,3 +46,45 @@ applies this with patch --fuzz=0 -p1 in SPECS/ and passes
      %if %{_build_minimal}
          %make_build LSMOD=%{SOURCE2} localmodconfig
      %else
+@@ -353,25 +362,7 @@
+     touch %{_localstatedir}/lib/rpm-state/%{name}/installing_core_%{_kver}
+ 
+ %posttrans core
+-    rm -f %{_localstatedir}/lib/rpm-state/%{name}/installing_core_%{_kver}
+-    if [ ! -e /run/ostree-booted ]; then
+-        # rpm-ostree 2026.1 runs dracut before depmod for third-party kernels,
+-        # so ensure modules.dep exists before kernel-install invokes dracut.
+-        depmod -a %{_kver}
+-        /bin/kernel-install add %{_kver} %{_kernel_dir}/vmlinuz || exit $?
+-        if [[ ! -e "/boot/symvers-%{_kver}.zst" ]]; then
+-            cp "%{_kernel_dir}/symvers.zst" "/boot/symvers-%{_kver}.zst"
+-            if command -v restorecon &>/dev/null; then
+-                restorecon "/boot/symvers-%{_kver}.zst"
+-            fi
+-        fi
+-    fi
+-
+-%preun core
+-    /bin/kernel-install remove %{_kver} || exit $?
+-    if [ -x /usr/sbin/weak-modules ]; then
+-        /usr/sbin/weak-modules --remove-kernel %{_kver} || exit $?
+-    fi
++    depmod -a %{_kver}
+ 
+ %files core
+     %license COPYING
+@@ -406,14 +397,7 @@
+     fi
+ 
+ %posttrans modules
+-    rm -f %{_localstatedir}/lib/rpm-state/%{name}/need_to_run_dracut_%{_kver}
+     /sbin/depmod -a %{_kver}
+-    if [ ! -e /run/ostree-booted ]; then
+-        if [ -f %{_localstatedir}/lib/rpm-state/%{name}/need_to_run_dracut_%{_kver} ]; then
+-            echo "Running: dracut -f --kver %{_kver}"
+-            dracut -f --kver "%{_kver}" || exit $?
+-        fi
+-    fi
+ 
+ %files modules
+     %dir %{_kernel_dir}
