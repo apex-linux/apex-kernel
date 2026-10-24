@@ -26,6 +26,21 @@ neither `apex-lane` nor `image.sh` sees a kernel family yet.
 
 ## The pair job
 
+### Pins per Fedora release
+
+`FEDORA` picks the release, in `pair.sh` and `bump.sh` alike; unset, it is 45, and the
+jobs run exactly as before. Release 45 reads `kernel.env` and `nvidia.env` in this
+directory; any other release reads `fedora-FEDORA/kernel.env` and
+`fedora-FEDORA/nvidia.env`, and never falls back to 45's. Without that directory both
+scripts stop with exit 2: "no fedora-46 pins: fedora-46/kernel.env and nvidia.env are
+not both there". The pins must be that release's: `chroot` is `fedora-FEDORA-x86_64`,
+the two SRPMs end in `.fcFEDORA.src`, every userspace RPM in `.fcFEDORA.x86_64` or
+`.noarch`, and anything else is exit 2. `bump.sh` asks the COPR about that chroot and
+negativo17's `fedora-FEDORA` repository. `kernel-spec.patch`, `series` and its patches
+are shared. apex-image's `next` lane runs the pair job with `-e FEDORA=46` in a
+fedora:46 container; there is no `fedora-46/` yet, because the COPR's F46 chroot and
+negativo17's key for it are still to be chosen, the key by the owner (ROADMAP S6).
+
 `APEX_RELEASE=N pair.sh MIRROR OUT [DNF-OPTION...]` follows the lane's `check.sh` contract: exit 1
 holds the pair, with the reason on the last line; exit 2 means it could not run. A
 reason that starts with `kmod:` is a kmod failure on a kernel that built, `kernel:` a

@@ -10,8 +10,8 @@ usage() {
     cat <<'EOF'
 usage: APEX_RELEASE=N pair.sh MIRROR OUT [DNF-OPTION...]
 
-The kernel and NVIDIA pair job of ADR 0015, run as root in one fresh fedora:45
-container:
+The kernel and NVIDIA pair job of ADR 0015, run as root in one fresh fedora:FEDORA
+container (FEDORA defaults to 45):
 
   1. verifies every input in MIRROR against kernel.env and nvidia.env: the sha256 of
      each pinned file, and its signature against a keyring that holds only its pinned
@@ -41,7 +41,9 @@ a failed kernel check gives a "check:" reason and no kernel.lock.
 MIRROR holds the pinned files under their RPM file names. Logs go to OUT, the
 kernel build's as OUT/debug/kernel.log. A reason
 that starts with "kmod:" is a kmod failure on a kernel that built. DNF-OPTIONs name
-the compose's repositories. MODKEY_DIR defaults to /run/apex-modkey; PAIR_ID names
+the compose's repositories. FEDORA picks the pins: 45 reads kernel.env and nvidia.env
+next to pair.sh, any other release fedora-FEDORA/; their chroot and every NEVRA must
+be that release's. MODKEY_DIR defaults to /run/apex-modkey; PAIR_ID names
 the key's certificate.
 
 APEX_PAIR_FAULT=kmod is a test hook for the lane's rehearsals: the kmod build fails
@@ -69,6 +71,35 @@ env_value() {
     value=$(sed -n "s/^$key=//p" "$file")
     [[ -n $value && $value != *$'\n'* ]] || cannot "${file##*/} has no single $key"
     printf '%s\n' "$value"
+}
+
+release_pins() {
+    fedora=${FEDORA:-45}
+    [[ $fedora =~ ^[1-9][0-9]+$ ]] || cannot "FEDORA is a Fedora release number, not '$fedora'"
+    if [[ $fedora == 45 ]]; then
+        pins=$here
+    else
+        pins=$here/fedora-$fedora
+    fi
+    [[ -f $pins/kernel.env && -f $pins/nvidia.env ]] ||
+        cannot "no fedora-$fedora pins: ${pins#"$here/"}/kernel.env and nvidia.env are not both there"
+    kernel_env=$pins/kernel.env nvidia_env=$pins/nvidia.env
+}
+
+# Pins of another release must never build or report as this one's.
+require_release_pins() {
+    local chroot_pin kernel_pin kmod_pin nevra
+    chroot_pin=$(env_value "$kernel_env" chroot)
+    kernel_pin=$(env_value "$kernel_env" srpm)
+    kmod_pin=$(env_value "$nvidia_env" kmod_srpm)
+    [[ $chroot_pin == "fedora-$fedora-x86_64" ]] ||
+        cannot "kernel.env's chroot is $chroot_pin, not fedora-$fedora-x86_64"
+    for nevra in "$kernel_pin" "$kmod_pin"; do
+        [[ $nevra == *".fc$fedora.src" ]] || cannot "$nevra is not a .fc$fedora SRPM"
+    done
+    while read -r nevra _; do
+        [[ $nevra =~ \.fc$fedora\.(x86_64|noarch)$ ]] || cannot "nvidia.env's $nevra is not a .fc$fedora RPM"
+    done < <(sed -n 's/^userspace=//p' "$nvidia_env")
 }
 
 file_of() {
@@ -261,7 +292,7 @@ apex_release=${apex_release:-unset}
 kernel_srpm=srpms/$(file_of "$kernel_srpm")
 nvidia_kmod_srpm=srpms/$(file_of "$kmod_srpm")
 
-To rebuild the kernel (fedora:45, as root):
+To rebuild the kernel (fedora:$fedora, as root):
   rpm -i srpms/$(file_of "$kernel_srpm")
   cd ~/rpmbuild/SPECS && patch --fuzz=0 -p1 < /path/to/this/recipe/kernel-spec.patch
   rpmbuild -bb --define 'apex_release ${apex_release:-N}' \\
@@ -343,7 +374,8 @@ main() {
         command -v "$tool" >/dev/null || cannot "no $tool in the container"
     done
     here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-    kernel_env=$here/kernel.env nvidia_env=$here/nvidia.env
+    release_pins
+    require_release_pins
     key_dir=${MODKEY_DIR:-/run/apex-modkey} pair_id=${PAIR_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
     key_made=0
     [[ -d $mirror ]] || cannot "no mirror directory $mirror"
