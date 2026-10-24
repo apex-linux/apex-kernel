@@ -7,14 +7,15 @@ usage() {
 usage: bump.sh check
 
 Compares kernel.env and nvidia.env with what the COPR, kernel.org and negativo17
-offer now, and never edits either file. The first line is one of:
+offer now, and never edits either file. First the kernel, in one or two lines:
 
   point NEVRA                                  a newer build of the pinned major
   major NEVRA waiting-for-owner EOL-in-Nd      a newer major; N counts the days until
                                                the pinned major's estimated EOL
   none
 
-A point bump wins over a major one: the lane takes it unattended. A build counts
+When both exist, the point line comes first: the lane takes it unattended, and the
+major line keeps the owner's countdown in view. A build counts
 when its chroot (kernel.env's chroot) succeeded, whatever the whole build's state.
 The pinned major's EOL is 0 days once kernel.org lists it as EOL or no longer lists
 it, and otherwise 16 days after the next major's release ("unknown" when that date
@@ -101,14 +102,10 @@ check_kernel() {
             [[ -n $major_bump ]] || { chroot_succeeded "$id" && major_bump=$version; } || true
         fi
     done < <(sort -rn <<<"$builds")
-    if [[ -n $point ]]; then
-        printf 'point %s-0:%s.%s.src\n' "$name" "$point" "$dist"
-    elif [[ -n $major_bump ]]; then
-        printf 'major %s-0:%s.%s.src waiting-for-owner %s\n' "$name" "$major_bump" "$dist" \
-            "$(eol_in "$(major_of "$pinned")" "$(major_of "$major_bump")")"
-    else
-        printf 'none\n'
-    fi
+    [[ -z $point ]] || printf 'point %s-0:%s.%s.src\n' "$name" "$point" "$dist"
+    [[ -z $major_bump ]] || printf 'major %s-0:%s.%s.src waiting-for-owner %s\n' "$name" "$major_bump" "$dist" \
+        "$(eol_in "$(major_of "$pinned")" "$(major_of "$major_bump")")"
+    [[ -n $point || -n $major_bump ]] || printf 'none\n'
 }
 
 # Each package of primary.xml as "name arch epoch ver rel sha256".

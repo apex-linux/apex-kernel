@@ -48,8 +48,9 @@ kernel failure, and `check:` a failed `check.sh`; the lane picks the hold (72 h 
   the tmpfs. A whole pair has not run through `pair.sh`; that waits for the builder
   VM, whose disk the kernel build needs.
 
-`bump.sh check` prefers a point bump over a major one, because the lane takes a point
-bump unattended. The pinned major's EOL counts 0 days once kernel.org lists it as EOL
+When a point and a major bump both exist, `bump.sh check` prints both, the point first:
+the lane takes the point unattended, and the major line keeps the owner's EOL countdown
+in view. The pinned major's EOL counts 0 days once kernel.org lists it as EOL
 or drops it, and otherwise 16 days after the next major's release (ROADMAP's 7.1 and
 7.2), or `unknown` when releases.json no longer shows that date.
 

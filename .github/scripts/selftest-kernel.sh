@@ -263,23 +263,29 @@ bump() { PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" BUMP_NOW=$((MAINLINE_74 + 6 * 8
 chroot_state 250 succeeded
 chroot_state 300 succeeded
 BUMP=$(bump)
-check "bump: a newer build of the pinned major is a point bump" "point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src" \
-    "$(head -n 1 <<<"$BUMP")"
+check "bump: a point and a major bump both print, the point first" \
+    "point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src
+major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-10d" "$(grep -v '^nvidia ' <<<"$BUMP")"
 check "bump: the newest kmod of the pinned branch" \
-    "nvidia nvidia-kmod-3:615.80.01-1.fc45.src $SUM_B newer" "$(sed -n 2p <<<"$BUMP")"
+    "nvidia nvidia-kmod-3:615.80.01-1.fc45.src $SUM_B newer" "$(grep '^nvidia ' <<<"$BUMP" | sed -n 1p)"
 check "bump: a userspace package still at its pin" \
     "nvidia nvidia-driver-3:615.78.08-1.fc45.x86_64 2099da1e492b1abf2651c49b1a98f27ca215517bdddad06438769d0e25d2a6e4 pinned" \
-    "$(sed -n 3p <<<"$BUMP")"
+    "$(grep '^nvidia ' <<<"$BUMP" | sed -n 2p)"
+
+chroot_state 300 failed
+check "bump: a newer build of the pinned major alone is a point bump" "point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src" \
+    "$(bump | grep -v '^nvidia ')"
+chroot_state 300 succeeded
 
 chroot_state 250 failed
 check "bump: a newer major waits for the owner, with the EOL countdown" \
-    "major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-10d" "$(bump | head -n 1)"
+    "major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-10d" "$(bump | grep -v '^nvidia ')"
 releases true
 check "bump: an EOL pinned major counts 0 days" \
-    "major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-0d" "$(bump | head -n 1)"
+    "major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-0d" "$(bump | grep -v '^nvidia ')"
 
 chroot_state 300 failed
-check "bump: no newer succeeded chroot build is none" none "$(bump | head -n 1)"
+check "bump: no newer succeeded chroot build is none" none "$(bump | grep -v '^nvidia ')"
 
 rm "$B/http/$(printf '%s' "$NEG/x86_64/repodata/repomd.xml" | tr -c 'A-Za-z0-9._-' '_')"
 check "bump: an unreadable source means it cannot run" 2 \
