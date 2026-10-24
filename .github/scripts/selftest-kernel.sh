@@ -86,7 +86,7 @@ done
 EOF
 fake dnf5 <<'EOF'
 #!/usr/bin/env bash
-exit 0
+[[ -z ${FAKE_DNF_LOG:-} ]] || printf '%s\n' "$*" >>"$FAKE_DNF_LOG"
 EOF
 fake ccache <<'EOF'
 #!/usr/bin/env bash
@@ -128,6 +128,7 @@ fake_rpm_file "$P/mirror/$KERNEL_SRPM" "$COPR_FPR" kernel-cachyos-0:7.3.0-4.cach
 fake_rpm_file "$P/mirror/$KMOD_SRPM" "$NEGATIVO17_FPR" nvidia-kmod-3:615.78.08-1.fc45.src
 fake_rpm_file "$P/mirror/$USERSPACE" "$NEGATIVO17_FPR" nvidia-driver-3:615.78.08-1.fc45.x86_64
 cat >"$P/kernel/kernel.env" <<EOF
+chroot=fedora-45-x86_64
 srpm=kernel-cachyos-0:7.3.0-4.cachyos1.fc45.src
 srpm_sha256=$(sha_of "$P/mirror/$KERNEL_SRPM")
 copr_key=${COPR_FPR^^}
@@ -146,7 +147,7 @@ run_pair() {
     PAIR_OUT=$(mktemp -d -p "$P")
     PAIR_RC=0
     mkdir "$PAIR_OUT/tmp"
-    env PATH="$P/bin:$PATH" TMPDIR="$PAIR_OUT/tmp" FAKE_SCOPE_LOG="$PAIR_OUT/scope" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY" PAIR_ID=selftest APEX_RELEASE=1 "$@" \
+    env -u FEDORA PATH="$P/bin:$PATH" FAKE_DNF_LOG="$PAIR_OUT/dnf-argv" TMPDIR="$PAIR_OUT/tmp" FAKE_SCOPE_LOG="$PAIR_OUT/scope" FAKE_SPEC="$P/kernel-cachyos.spec" MODKEY_DIR="$PAIR_KEY" PAIR_ID=selftest APEX_RELEASE=1 "$@" \
         "$P/kernel/pair.sh" "$P/mirror" "$PAIR_OUT" --repo=fedora >"$PAIR_OUT/stdout" 2>"$PAIR_OUT/stderr" || PAIR_RC=$?
     PAIR_LAST=$(tail -n 1 "$PAIR_OUT/stderr")
 }
@@ -366,6 +367,55 @@ check "pair: a key directory in use means it cannot run" 2 \
         "$P/kernel/pair.sh" "$P/mirror" "$PAIR_OUT")"
 check "pair: a key it did not make is left alone" "not ours" "$(cat "$PAIR_KEY_BUSY/signing_key.pem")"
 
+# --- pair.sh: FEDORA picks the release's pins, and never falls back to 45's ------------
+dnf_argv() { sed -E -e "s|$PAIR_KEY|KEY|g" -e "s|$PAIR_OUT|OUT|g" -e "s|/tmp\.[A-Za-z0-9]+/|/tmp.X/|g" "$PAIR_OUT/dnf-argv"; }
+run_pair
+dnf_argv >"$P/dnf-argv.unset"
+grep -v '^module_cert_sha256=' "$PAIR_OUT/pair.lock" >"$P/lock.unset"
+run_pair FEDORA=45
+check "pair: FEDORA=45 runs dnf exactly as with FEDORA unset" "$(cat "$P/dnf-argv.unset")" "$(dnf_argv)"
+check "pair: FEDORA=45 locks exactly as with FEDORA unset" "$(cat "$P/lock.unset")" \
+    "$(grep -v '^module_cert_sha256=' "$PAIR_OUT/pair.lock")"
+
+run_pair FEDORA=46
+check "pair: FEDORA=46 without fedora-46/ cannot run" 2 "$PAIR_RC"
+check "pair: the missing release pins are named" \
+    "pair.sh cannot run: no fedora-46 pins: fedora-46/kernel.env and nvidia.env are not both there" "$PAIR_LAST"
+check_false "pair: missing release pins make no key" test -e "$PAIR_KEY/signing_key.x509"
+run_pair FEDORA=4x
+check "pair: a FEDORA that is no release number cannot run" 2 "$PAIR_RC"
+
+F46=$P/kernel/fedora-46
+mkdir -p "$F46"
+for f in "$KERNEL_SRPM" "$KMOD_SRPM" "$USERSPACE"; do
+    sed 's/\.fc45\./.fc46./' "$P/mirror/$f" >"$P/mirror/${f/.fc45./.fc46.}"
+done
+sed -e 's/\.fc45\./.fc46./' -e 's/^chroot=fedora-45-x86_64$/chroot=fedora-46-x86_64/' \
+    -e "s/^srpm_sha256=.*/srpm_sha256=$(sha_of "$P/mirror/${KERNEL_SRPM/.fc45./.fc46.}")/" "$P/kernel/kernel.env" >"$F46/kernel.env"
+sed -e 's/\.fc45\./.fc46./' \
+    -e "s/^kmod_srpm_sha256=.*/kmod_srpm_sha256=$(sha_of "$P/mirror/${KMOD_SRPM/.fc45./.fc46.}")/" \
+    -e "s/^\(userspace=[^ ]*\) .*/\1 $(sha_of "$P/mirror/${USERSPACE/.fc45./.fc46.}")/" "$P/kernel/nvidia.env" >"$F46/nvidia.env"
+run_pair FEDORA=46
+check "pair: FEDORA=46 with fedora-46/ builds" 0 "$PAIR_RC"
+check_true "pair: FEDORA=46 names a .fc46 kernel" \
+    grep -q 'Apex kernel 7.3.0-4.cachyos1.apex1.fc46.x86_64 selftest$' "$PAIR_OUT/module-key.txt"
+check_true "pair: FEDORA=46's source set carries fedora-46's kernel.env" cmp "$F46/kernel.env" "$PAIR_OUT/source/recipe/kernel.env"
+check_true "pair: FEDORA=46's source set carries fedora-46's nvidia.env" cmp "$F46/nvidia.env" "$PAIR_OUT/source/recipe/nvidia.env"
+check_true "pair: FEDORA=46's source set holds the .fc46 SRPMs" \
+    test -f "$PAIR_OUT/source/srpms/${KERNEL_SRPM/.fc45./.fc46.}" -a -f "$PAIR_OUT/source/srpms/${KMOD_SRPM/.fc45./.fc46.}"
+check_true "pair: FEDORA=46's source set checks" "$KERNEL_SRC/source-check.sh" "$PAIR_OUT/source"
+
+cp "$F46/kernel.env" "$P/good-46.env"
+sed -i 's/^chroot=.*/chroot=fedora-45-x86_64/' "$F46/kernel.env"
+run_pair FEDORA=46
+check "pair: FEDORA=46 refuses a chroot of 45" "pair.sh cannot run: kernel.env's chroot is fedora-45-x86_64, not fedora-46-x86_64" "$PAIR_LAST"
+cp "$P/good-46.env" "$F46/kernel.env"
+sed -i 's/^\(userspace=nvidia-driver-3:615.78.08-1\)\.fc46\./\1.fc45./' "$F46/nvidia.env"
+run_pair FEDORA=46
+check "pair: FEDORA=46 refuses a .fc45 userspace RPM" \
+    "pair.sh cannot run: nvidia.env's nvidia-driver-3:615.78.08-1.fc45.x86_64 is not a .fc46 RPM" "$PAIR_LAST"
+rm -r "$F46"
+
 # --- bump.sh: against canned COPR, kernel.org and negativo17 answers -------------------
 B="$TMP/bump"
 mkdir -p "$B/bin" "$B/kernel" "$B/http"
@@ -555,4 +605,33 @@ check "bump: no build of the pinned branch is missing" "nvidia nvidia-driver mis
 check "nvidia-env: refuses a missing package" 1 "$(nvidia_env_rc)"
 check "nvidia-env: names the missing package" "bump.sh: nvidia-driver has no build of the pinned branch" "$(tail -n 1 "$B/stderr")"
 x86_64_repo
+
+# --- bump.sh: FEDORA picks the release's pins, chroot and repository -----------------
+bump46() { env -u FEDORA PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" BUMP_NOW=$BUMP_AT FEDORA=46 "$B/kernel/bump.sh" "$@" 2>&1; }
+check "bump: FEDORA=46 without fedora-46/ cannot run" \
+    "bump.sh cannot run: no fedora-46 pins: fedora-46/kernel.env and nvidia.env are not both there" "$(bump46 check | tail -n 1)"
+mkdir -p "$B/kernel/fedora-46"
+sed -e 's/\.fc45\./.fc46./' -e 's/^chroot=.*/chroot=fedora-46-x86_64/' "$B/kernel/kernel.env" >"$B/kernel/fedora-46/kernel.env"
+sed 's/\.fc45\./.fc46./' "$B/kernel/nvidia.env" >"$B/kernel/fedora-46/nvidia.env"
+http "$COPR_API/build/list/?ownername=bieszczaders&projectname=kernel-cachyos&packagename=kernel-cachyos&limit=30" <<'EOF'
+{"items": [
+ {"id": 250, "state": "succeeded", "source_package": {"version": "7.3.1-1.cachyos1"}},
+ {"id": 200, "state": "succeeded", "source_package": {"version": "7.3.0-4.cachyos1"}}]}
+EOF
+http "$COPR_API/build-chroot?build_id=250&chrootname=fedora-46-x86_64" <<<'{"state": "succeeded"}'
+NEG46=https://negativo17.org/repos/nvidia/fedora-46
+NEG=$NEG46 repo SRPMS "nvidia-kmod src 3 615.78.08 1.fc46 $SUM_A $(days_ago 40)"
+NEG=$NEG46 repo x86_64 "nvidia-driver x86_64 3 615.78.08 1.fc46 $SUM_B $(days_ago 40)"
+BUMP46=$(bump46 check)
+check "bump: FEDORA=46 asks the COPR's fedora-46 chroot and names a .fc46 SRPM" \
+    "point kernel-cachyos-0:7.3.1-1.cachyos1.fc46.src" "$(head -n 1 <<<"$BUMP46")"
+check "bump: FEDORA=46 reads negativo17's fedora-46 repository" \
+    "nvidia nvidia-kmod-3:615.78.08-1.fc46.src $SUM_A pinned" "$(grep '^nvidia nvidia-kmod' <<<"$BUMP46")"
+check "bump: FEDORA=46's nvidia-env pins fedora-46's builds" \
+    "kmod_srpm=nvidia-kmod-3:615.78.08-1.fc46.src
+userspace=nvidia-driver-3:615.78.08-1.fc46.x86_64 $SUM_B" "$(bump46 nvidia-env | grep -E '^(kmod_srpm|userspace)=')"
+sed -i 's/^chroot=.*/chroot=fedora-45-x86_64/' "$B/kernel/fedora-46/kernel.env"
+check "bump: FEDORA=46 refuses a chroot of 45" "bump.sh cannot run: kernel.env's chroot is fedora-45-x86_64, not fedora-46-x86_64" \
+    "$(bump46 check | tail -n 1)"
+rm -r "$B/kernel/fedora-46"
 

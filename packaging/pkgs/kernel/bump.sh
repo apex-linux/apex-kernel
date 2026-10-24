@@ -34,6 +34,10 @@ pinned branch for every package, the other lines kept as they are. It refuses, w
 exit 1 and the reason on the last line, while a package is missing, still soaking,
 older than its pin, or of another driver version than the kmod.
 
+FEDORA picks the pins, as in pair.sh: 45 reads kernel.env and nvidia.env next to
+bump.sh, any other release fedora-FEDORA/, and the COPR chroot and negativo17's
+repository are that release's.
+
 Exit 2 when a source cannot be read. BUMP_NOW (seconds since the epoch) replaces
 the clock.
 EOF
@@ -59,6 +63,35 @@ env_value() {
     value=$(sed -n "s/^$key=//p" "$file")
     [[ -n $value && $value != *$'\n'* ]] || cannot "${file##*/} has no single $key"
     printf '%s\n' "$value"
+}
+
+release_pins() {
+    fedora=${FEDORA:-45}
+    [[ $fedora =~ ^[1-9][0-9]+$ ]] || cannot "FEDORA is a Fedora release number, not '$fedora'"
+    if [[ $fedora == 45 ]]; then
+        pins=$here
+    else
+        pins=$here/fedora-$fedora
+    fi
+    [[ -f $pins/kernel.env && -f $pins/nvidia.env ]] ||
+        cannot "no fedora-$fedora pins: ${pins#"$here/"}/kernel.env and nvidia.env are not both there"
+    kernel_env=$pins/kernel.env nvidia_env=$pins/nvidia.env
+}
+
+# Pins of another release must never build or report as this one's.
+require_release_pins() {
+    local chroot_pin kernel_pin kmod_pin nevra
+    chroot_pin=$(env_value "$kernel_env" chroot)
+    kernel_pin=$(env_value "$kernel_env" srpm)
+    kmod_pin=$(env_value "$nvidia_env" kmod_srpm)
+    [[ $chroot_pin == "fedora-$fedora-x86_64" ]] ||
+        cannot "kernel.env's chroot is $chroot_pin, not fedora-$fedora-x86_64"
+    for nevra in "$kernel_pin" "$kmod_pin"; do
+        [[ $nevra == *".fc$fedora.src" ]] || cannot "$nevra is not a .fc$fedora SRPM"
+    done
+    while read -r nevra _; do
+        [[ $nevra =~ \.fc$fedora\.(x86_64|noarch)$ ]] || cannot "nvidia.env's $nevra is not a .fc$fedora RPM"
+    done < <(sed -n 's/^userspace=//p' "$nvidia_env")
 }
 
 major_of() { cut -d. -f1,2 <<<"$1"; }
@@ -148,7 +181,7 @@ soak_days() {
 # One line per pinned package: "pin NAME NEVRA SHA256 STATUS [SOAK]" or "pin NAME missing".
 nvidia_builds() {
     local release nevra name version rel arch branch newest status soak days built newest_vr newest_epoch newest_sum
-    release=$(sed -E 's/^(fedora-[0-9]+)-.*/\1/' <<<"$chroot")
+    release=fedora-$fedora
     days=$(soak_days)
     local -A seen=()
     local available
@@ -233,8 +266,9 @@ main() {
         command -v "$tool" >/dev/null || cannot "no $tool"
     done
     here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-    kernel_env=$here/kernel.env nvidia_env=$here/nvidia.env
-    chroot=$(env_value "$kernel_env" chroot)
+    release_pins
+    require_release_pins
+    chroot=fedora-$fedora-x86_64
     now=${BUMP_NOW:-$(date +%s)}
     if [[ $1 == nvidia-env ]]; then
         nvidia_env
