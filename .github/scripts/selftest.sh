@@ -5,7 +5,7 @@
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-require awk sed mktemp git
+require awk sed mktemp git jq gzip openssl sha256sum patch
 
 FAILS=0
 TESTS=0
@@ -147,6 +147,9 @@ for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.Pca
 done
 check_false ".gitignore keeps the libfprint patches" \
     git -C "$APEX_ROOT" check-ignore -q --no-index packaging/libfprint/patches/README.md
+
+# shellcheck source=.github/scripts/selftest-kernel.sh
+. "$(dirname "${BASH_SOURCE[0]}")/selftest-kernel.sh"
 
 if ((FAILS > 0)); then
     die "selftest: $FAILS failure(s)"
