@@ -100,7 +100,11 @@ is_sha256() { [[ $1 =~ ^[0-9a-f]{64}$ ]]; }
 is_fingerprint() { [[ $1 =~ ^[0-9A-F]{40}$ ]]; }
 is_date() { [[ $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; }
 
-check_false "kernel: no pkg.env, so neither apex-lane nor image.sh sees a kernel family" test -e "$K/pkg.env"
+check "kernel pkg.env: the pair recipe apex-lane requires" \
+    "family=kernel-cachyos install=kernel-cachyos kernel-cachyos-core kernel-cachyos-modules kernel_env=kernel.env nvidia_env=nvidia.env source=copr-srpm " \
+    "$(grep -vE '^(#|$)' "$K/pkg.env" | LC_ALL=C sort | tr '\n' ' ')"
+check_true "kernel pkg.env: kernel_env and nvidia_env name files next to it" \
+    test -f "$K/$(env_values "$K/pkg.env" kernel_env)" -a -f "$K/$(env_values "$K/pkg.env" nvidia_env)"
 for f in kernel.env nvidia.env; do
     check "$f: only comments, blank lines and KEY=VALUE" "" "$(grep -vE '^(#.*|[a-z0-9_]+=[^ ].*|)$' "$K/$f")"
 done

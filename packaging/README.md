@@ -8,7 +8,7 @@ compose ([apex-image packaging](https://github.com/apex-linux/apex-image/blob/ma
 | Piece | Builds | Built by | Output |
 |---|---|---|---|
 | `libfprint/` | Fedora's libfprint SRPM plus the ELAN 04f3:0c6e patches | apex-image's builder VM (`.github/scripts/libfprint.sh build`) | `_build/libfprint/`, or "degraded" |
-| `pkgs/kernel/` | the CachyOS kernel and NVIDIA open modules as one pair ([ADR 0015](https://github.com/apex-linux/apex/blob/main/docs/adr/0015-cachyos-kernel-and-nvidia.md)) | apex-image's `apex-lane` pair kind (`source=copr-srpm`), once a `pkg.env` here asks for it | none yet: no `pkg.env` |
+| `pkgs/kernel/` | the CachyOS kernel and NVIDIA open modules as one pair ([ADR 0015](https://github.com/apex-linux/apex/blob/main/docs/adr/0015-cachyos-kernel-and-nvidia.md)) | apex-image's `apex-lane` pair kind (`source=copr-srpm`), through `pkgs/kernel/pkg.env` | the pair's RPMs, `pair.lock` or `kernel.lock`, `OUT/source/` |
 
 ## libfprint
 
@@ -29,6 +29,6 @@ with NVIDIA's open modules built for exactly that kernel in the same job
 already has the pair kind (`source=copr-srpm`) that runs the job. `pkgs/kernel/` holds
 what the K1 spike measured and what the job runs: the spec patch, the per-build module
 key, the pair job, the kmod build, the pair's checks and the pins
-([pkgs/kernel/README.md](pkgs/kernel/README.md)); it has no `pkg.env`, so no image takes
-the kernel yet: that waits on the owner's decision on negativo17's key. `pkgs/kernel/patches/` holds only the ALC294 quirk, which is out of any
+([pkgs/kernel/README.md](pkgs/kernel/README.md)); its `pkg.env` makes the kernel a family
+of the lane. `pkgs/kernel/patches/` holds only the ALC294 quirk, which is out of any
 series: it ships only if the `model=` alias fails (ADR 0004, as amended).
