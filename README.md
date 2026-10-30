@@ -10,7 +10,9 @@ ASUS Vivobook Pro 14X OLED (M7400QC).
 - **Kernel** (`packaging/pkgs/kernel/`): the CachyOS kernel and NVIDIA's open modules,
   built as one pair and signed with a per-build key
   ([ADR 0015](https://github.com/apex-linux/apex/blob/main/docs/adr/0015-cachyos-kernel-and-nvidia.md)).
-  The K1 spike's results are here; the lane that ships the pair arrives in roadmap S1c.
+  The K1 spike's results are here. apex-image's `apex-lane` already builds the pair
+  (`source=copr-srpm`); it takes this kernel only once a `pkg.env` here asks it to,
+  after the owner's decision on negativo17's key.
 
 [packaging/README.md](packaging/README.md) has the details.
 [apex-image](https://github.com/apex-linux/apex-image) pins this repository by commit
