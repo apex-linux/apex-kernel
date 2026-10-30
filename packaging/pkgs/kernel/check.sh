@@ -17,7 +17,8 @@ The lane checks of one kernel and NVIDIA pair (ADR 0015), run in the build conta
     this build's module key (module-key.sh);
   - every module of kernel-cachyos-modules and of kmod-nvidia names that certificate as
     its signer, with SHA-512 or SHA-256, and has the kernel's vermagic;
-  - the signature of every NVIDIA module verifies against MODULE_CERT;
+  - the signature of every NVIDIA module verifies against MODULE_CERT, and each one
+    carries a .BTF section;
   - kmod-nvidia requires exactly this kernel;
   - no payload file holds a PEM private key.
 
@@ -140,6 +141,13 @@ verify_module_signature() {
         fail "the signature of ${packed##*/} does not verify against this build's certificate"
 }
 
+require_module_btf() {
+    local packed=$1 module=$CHECK_WORK/btf.ko sections
+    uncompressed "$packed" >"$module" || cannot "cannot read ${packed##*/}"
+    sections=$(readelf --section-headers --wide -- "$module" 2>/dev/null) || fail "readelf cannot read ${packed##*/}"
+    grep -qE '[[:space:]]\.BTF[[:space:]]' <<<"$sections" || fail "${packed##*/} carries no .BTF section"
+}
+
 check_nvidia() {
     local kmod=$1 module requires
     local -a nvidia_modules
@@ -150,8 +158,9 @@ check_nvidia() {
     ((${#nvidia_modules[@]} > 0)) || fail "${kmod##*/} holds no module"
     for module in "${nvidia_modules[@]}"; do
         verify_module_signature "$module"
+        require_module_btf "$module"
     done
-    ok "${#nvidia_modules[@]} NVIDIA modules verify against the certificate; ${kmod##*/} requires this kernel"
+    ok "${#nvidia_modules[@]} NVIDIA modules verify against the certificate and carry BTF; ${kmod##*/} requires this kernel"
 }
 
 check_kernel_uname_r() {
@@ -175,7 +184,7 @@ main() {
     for v in RPMS_DIR CHECK_WORK MODULE_CERT; do
         [[ -n ${!v:-} ]] || cannot "$v is not set"
     done
-    for tool in modinfo openssl perl objdump file cmp zstd xz cpio rpm2cpio; do
+    for tool in modinfo openssl perl objdump readelf file cmp zstd xz cpio rpm2cpio; do
         command -v "$tool" >/dev/null || cannot "no $tool in the buildroot"
     done
     perl -MMath::BigInt -e 1 2>/dev/null || cannot "no perl Math::BigInt in the buildroot: extract-sys-certs.pl needs it"
