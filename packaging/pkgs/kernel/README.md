@@ -14,11 +14,11 @@ neither `apex-lane` nor `image.sh` sees a kernel family yet.
 | `series` | the patches applied after the CachyOS ones, one file name per line relative to `series`; empty today. The spec's `%prep` first runs `test -r` on it: a missing series file would otherwise pass unseen through the `sed \| while` pipe that applies it |
 | `tests/fixtures/` | the 7.3.0-4 SRPM's `kernel-cachyos.spec` (sha256 `0edf6e56…`), which the selftest patches with `kernel-spec.patch` |
 | `module-key.sh` | `generate DIR CN`: an ECDSA P-384 key and its certificate on a tmpfs, the kernel's own certificate extensions; `shred DIR`: the private key goes, the DER certificate stays |
-| `kmod-build.sh` | in the container that built the kernel: installs its `kernel-cachyos-devel`, checks the GCC major, rebuilds the `nvidia-kmod` SRPM unmodified with `--define 'kernels <uname -r>'` and kmodtool's signing macros |
+| `kmod-build.sh` | in the container that built the kernel: installs its `kernel-cachyos-devel` and dwarves, puts `VMLINUX` (the kernel's `vmlinux`) into its tree so the modules get BTF, checks the GCC major, rebuilds the `nvidia-kmod` SRPM unmodified with `--define 'kernels <uname -r>'` and kmodtool's signing macros |
 | `pair.sh` | the pair job, run as root in one fresh `fedora:45` container: verifies every pinned input of the mirror, makes the key, builds the kernel (ccache when `CCACHE_DIR` is set) and the kmod, shreds the key, runs `check.sh`, writes `pair.lock`; [the contract below](#the-pair-job) |
 | `bump.sh` | `bump.sh check`: `point`, `major … waiting-for-owner EOL-in-Nd` or `none` from the COPR and kernel.org, then the newest negativo17 builds of the pinned NVIDIA branch with their soak; `bump.sh nvidia-env`: the candidate `nvidia.env` of a driver bump, on stdout ([Driver bump](#driver-bump)); edits nothing |
 | `source-check.sh` | `source-check.sh DIR`: checks a pair's public source set ([below](#the-public-source-set)); exit 1 names what is missing or wrong, exit 2 means it could not run |
-| `check.sh` | the lane checks of a pair (the lane's `check.sh` contract, plus `MODULE_CERT`): `config-required.txt`, the certificate built into `vmlinuz`, the signer of every module, the NVIDIA signatures verified with `openssl cms`, `kernel-uname-r`, no private key in a payload |
+| `check.sh` | the lane checks of a pair (the lane's `check.sh` contract, plus `MODULE_CERT`): `config-required.txt`, the certificate built into `vmlinuz`, the signer of every module, the NVIDIA signatures verified with `openssl cms` and a `.BTF` section in every NVIDIA module, `kernel-uname-r`, no private key in a payload |
 | `config-required.txt` | the config lines ADR 0015 relies on, compared verbatim |
 | `patches/` | the ALC294 quirk, out of any series (ADR 0015, section 8) |
 | `kernel.env` | the COPR, chroot, SRPM NEVRA and sha256, the COPR key; the CachyOS tag, the repository it is verified from (`tag_repo`, the one K1 step 5 used) and its key, with the key's keys.openpgp.org URL (`tag_key_url`; keyserver.ubuntu.com serves the same key); `KEY=VALUE`, never sourced |
@@ -437,7 +437,8 @@ requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
   `uvm_processor_id_t` for `%d`) and three `-Wunused-but-set-variable`
   (`nvkms-evo.c:370`, `nvt_edidext_861.c:1027` and `1029`); and "pahole version
   differs", because `nvidia-kmod` does not BuildRequire dwarves, so the NVIDIA modules
-  carry no BTF.
+  carry no BTF. (Since then `kmod-build.sh` installs dwarves and gets the kernel's
+  `vmlinux`, and the modules carry BTF: [below](#what-s1c-must-do).)
 - Control: the same SRPM on the COPR's `kernel-cachyos-devel-7.2.11-cachyos1`
   (signature OK) in the same kind of container gives the identical set: 11,669 objtool
   lines, the same seven compiler warnings and the pahole line, in 5:35.06. Nothing is
@@ -480,8 +481,14 @@ requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
   compare its uncompressed `git archive` with Source0; both held for 7.3.0-4.
 - Expect the tag number at the front of the release (`7.3.0-4.cachyos1`); the `.apexN`
   suffix goes after it.
-- Install dwarves before the kmod build if the NVIDIA modules should carry BTF;
-  negativo17's spec does not ask for it.
+- The NVIDIA modules carry BTF. negativo17's spec does not BuildRequire dwarves, so
+  `kmod-build.sh` installs it; and kbuild makes a module's BTF against the kernel's
+  `vmlinux`, which `kernel-cachyos-devel` does not ship ("Skipping BTF generation for
+  nvidia.ko due to unavailability of vmlinux", with dwarves alone), so `pair.sh` passes
+  `OUT/debug/vmlinux` as `VMLINUX` and `kmod-build.sh` puts it into the kernel tree.
+  `check.sh` holds the pair when an NVIDIA module has no `.BTF` section. On 2026-10-30,
+  615.78.08 on the COPR's 7.3.0-4 `-devel`, with that kernel's `vmlinux` unpacked from
+  its `vmlinuz`, gave all five modules a `.BTF` section, still signed.
 - Apply `kernel-spec.patch`, which carries all of ADR 0015 §1's hunks: `pair.sh` passes
   `APEX_RELEASE` (the lane's N) as `apex_release` and `series` as `apex_series`. Core
   `%post` stays as shipped, so its `rpm-state` marker is no longer removed; it is

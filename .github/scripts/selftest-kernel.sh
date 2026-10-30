@@ -103,6 +103,7 @@ grep -q 'without BTF' "${!#}" || printf '  [14] .BTF              PROGBITS\n  [1
 EOF
 cat >"$P/kernel/kmod-build.sh" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "${VMLINUX:-}" >"${FAKE_SCOPE_LOG%/*}/kmod-vmlinux"
 [[ -s $3/signing_key.pem ]] || { echo "no module key"; exit 1; }
 touch "${FAKE_SCOPE_LOG%/*}/kmod-build-ran"
 printf 'nevr=kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-3:615.78.08-1.fc45.x86_64\n' \
@@ -175,6 +176,7 @@ check_true "pair: the key is shredded after a good pair" shredded
 check "pair: a good pair checks the whole pair" pair "$(cat "$PAIR_OUT/scope")"
 check_false "pair: a good pair writes no kernel.lock" test -e "$PAIR_OUT/kernel.lock"
 check_true "pair: a good pair runs the kmod build" test -e "$PAIR_OUT/kmod-build-ran"
+check "pair: the kmod build gets the kernel's vmlinux for BTF" "$PAIR_OUT/debug/vmlinux" "$(cat "$PAIR_OUT/kmod-vmlinux")"
 check "timings: a good pair has every stage" "verify dnf key kernel_builddep kernel kmod check source total" "$(timing_keys)"
 check "timings: every line is KEY=integer" "" "$(grep -vE '^[a-z_]+=[0-9]+$' "$PAIR_OUT/timings")"
 check_true "timings: the total covers the stages" timings_add_up

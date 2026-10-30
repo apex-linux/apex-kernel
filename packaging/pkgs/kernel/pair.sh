@@ -236,7 +236,7 @@ build_kmod() {
         printf 'pair.sh: APEX_PAIR_FAULT=kmod: the kmod build did not run\n' >"$out/kmod.log"
         return 1
     fi
-    "$here/kmod-build.sh" "$mirror/$(file_of "$kmod_srpm")" "$topdir/RPMS" "$key_dir" "$topdir" "${dnf_options[@]}" \
+    VMLINUX=$out/debug/vmlinux "$here/kmod-build.sh" "$mirror/$(file_of "$kmod_srpm")" "$topdir/RPMS" "$key_dir" "$topdir" "${dnf_options[@]}" \
         >"$out/kmod.log" 2>&1 || return 1
     printf 'ok the kmod built\n'
 }
