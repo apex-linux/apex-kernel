@@ -5,9 +5,8 @@ The CachyOS kernel (GCC build) rebuilt from the COPR's signed SRPM, and negativo
 that lives only for that job ([ADR 0015](https://github.com/apex-linux/apex/blob/main/docs/adr/0015-cachyos-kernel-and-nvidia.md),
 [ARCHITECTURE 4.2](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#42-kernel-and-nvidia-lane-s1c)). apex-image's
 `apex-lane` has the pair kind (`source=copr-srpm`) that runs the pair job. This
-directory holds what the K1 spike proved, the job's scripts and its pins. There is no
-`pkg.env`, so neither `apex-lane` nor `image.sh` sees a kernel family yet; it waits on
-the owner's decision on negativo17's key.
+directory holds what the K1 spike proved, the job's scripts and its pins, and `pkg.env`
+makes the pair the `kernel-cachyos` family of `apex-lane` and `image.sh`.
 
 | File | Role |
 |---|---|
@@ -22,6 +21,7 @@ the owner's decision on negativo17's key.
 | `check.sh` | the lane checks of a pair (the lane's `check.sh` contract, plus `MODULE_CERT`): `config-required.txt`, the certificate built into `vmlinuz`, the signer of every module, the NVIDIA signatures verified with `openssl cms`, `kernel-uname-r`, no private key in a payload |
 | `config-required.txt` | the config lines ADR 0015 relies on, compared verbatim |
 | `patches/` | the ALC294 quirk, out of any series (ADR 0015, section 8) |
+| `pkg.env` | the lane's recipe: `source=copr-srpm`, `family=kernel-cachyos`, `install=` the kernel packages (the kmod built for that kernel joins them), and the two pin files `kernel_env` and `nvidia_env`; `KEY=VALUE`, never sourced |
 | `kernel.env` | the COPR, chroot, SRPM NEVRA and sha256, the COPR key; the CachyOS tag, the repository it is verified from (`tag_repo`, the one K1 step 5 used) and its key, with the key's keys.openpgp.org URL (`tag_key_url`; keyserver.ubuntu.com serves the same key); `KEY=VALUE`, never sourced |
 | `nvidia.env` | the `nvidia-kmod` SRPM and each userspace RPM with NEVRA and sha256, the negativo17 key, and `soak_days` (7; `bump.sh` uses 7 when the key is absent); the same format |
 
