@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: kmod-build.sh NVIDIA-KMOD-SRPM KERNEL-RPMS-DIR KEY-DIR TOPDIR [DNF-OPTION...]
+usage: [VMLINUX=FILE] kmod-build.sh NVIDIA-KMOD-SRPM KERNEL-RPMS-DIR KEY-DIR TOPDIR [DNF-OPTION...]
 
 Builds negativo17's nvidia-kmod for exactly one kernel, in the container that just
 built that kernel (ADR 0015). It installs the kernel-cachyos-devel of KERNEL-RPMS-DIR,
@@ -12,7 +12,9 @@ rebuilds the SRPM unmodified through kmodtool for that one uname -r, and has kmo
 sign every module with the key of KEY-DIR (module-key.sh). The kmod-nvidia RPM lands
 under TOPDIR/RPMS. DNF-OPTIONs name the compose's repositories.
 
-Run it as root. check.sh, not this script, proves that the modules are signed.
+VMLINUX is that kernel's vmlinux, with its .BTF: kbuild generates a module's BTF
+against it, and kernel-cachyos-devel ships none, so without it the modules carry no
+BTF. Run it as root. check.sh, not this script, proves that the modules are signed.
 EOF
 }
 
@@ -60,10 +62,14 @@ main() {
     release=$(kernel_release_of "$devel")
     kernel_tree=/usr/src/kernels/$release
 
-    "${dnf[@]}" install rpm-build dnf5-plugins kmodtool "$devel"
+    "${dnf[@]}" install rpm-build dnf5-plugins kmodtool dwarves "$devel"
     "${dnf[@]}" builddep "$srpm"
     require_the_kernels_compiler "$kernel_tree"
     link_the_kernel_tree "$release" "$kernel_tree"
+    if [[ -n ${VMLINUX:-} ]]; then
+        [[ -s $VMLINUX ]] || die "VMLINUX names no file: $VMLINUX"
+        cp -- "$VMLINUX" "$kernel_tree/vmlinux"
+    fi
 
     rpmbuild --rebuild \
         --define "_topdir $topdir" \

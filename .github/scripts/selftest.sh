@@ -79,8 +79,16 @@ check "libfprint key is the same with no updates-testing either way" "$k_empty" 
 
 k_passed=$(PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" GA_REACHED=1 "$APEX_ROOT/.github/scripts/libfprint.sh" key 2>/dev/null)
 check "libfprint.sh key passes GA_REACHED to build.sh" "$(oci_tag "$k_ga")" "$k_passed"
-check "libfprint.sh refuses to guess GA_REACHED" 1 \
-    "$(PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" GA_REACHED='' rc_of "$APEX_ROOT/.github/scripts/libfprint.sh" key)"
+fprint_tag() {
+    env -u GA_REACHED -u TESTING_INCLUDEPKGS PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" "$@" \
+        "$APEX_ROOT/.github/scripts/libfprint.sh" key 2>/dev/null
+}
+: >"$F/dnf.log"
+k_unset=$(fprint_tag) || k_unset=""
+check_false "libfprint.sh key with GA_REACHED unset enables no updates-testing" grep -q updates-testing "$F/dnf.log"
+check "libfprint.sh key with GA_REACHED unset is the tag of GA_REACHED=1" "$(fprint_tag GA_REACHED=1)" "$k_unset"
+check "libfprint.sh key with GA_REACHED unset is the tag of GA_REACHED=0" "$(fprint_tag GA_REACHED=0)" "$k_unset"
+check "libfprint.sh key with GA_REACHED empty is the tag of GA_REACHED unset" "$(fprint_tag GA_REACHED=)" "$k_unset"
 check "libfprint.sh refuses a GA_REACHED other than 0 or 1" 1 \
     "$(PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" GA_REACHED=yes rc_of "$APEX_ROOT/.github/scripts/libfprint.sh" key)"
 

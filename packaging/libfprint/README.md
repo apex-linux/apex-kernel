@@ -75,7 +75,9 @@ any change that alters the output changes the key.
 
 In the builder VM, `.github/scripts/libfprint.sh build` runs it inside
 `registry.fedoraproject.org/fedora:45`, as root, with the repository checked out. It
-passes `GA_REACHED` and `TESTING_INCLUDEPKGS` with the image compose's values. The bare
+passes `GA_REACHED` and `TESTING_INCLUDEPKGS` on when they are set; unset or empty,
+`GA_REACHED` is `1` and `TESTING_INCLUDEPKGS` empty, as after Fedora 45 GA, when
+apex-image passes neither. `build.sh` itself still requires `GA_REACHED`. The bare
 command:
 
 ```bash
