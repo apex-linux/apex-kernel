@@ -13,8 +13,8 @@ root), with the image compose's repository switches.
   libfprint.sh key            print the cache key as an OCI tag
   libfprint.sh build OUTDIR   rebuild; exit 0 built, 3 degraded, anything else failed
 
-Environment: GA_REACHED (0 or 1, required) and TESTING_INCLUDEPKGS [empty], which
-apex-image passes from its Containerfile and updates-testing allowlist.
+Environment: GA_REACHED (0 or 1; unset or empty means 1, Fedora 45 having reached GA)
+and TESTING_INCLUDEPKGS [empty], the updates-testing allowlist a pre-GA compose passes.
 EOF
     exit 2
 }
@@ -23,8 +23,8 @@ readonly BUILD_SH="$APEX_ROOT/packaging/libfprint/build.sh"
 readonly EXIT_DEGRADED=3
 
 build_env() {
-    [[ ${GA_REACHED:-} == [01] ]] ||
-        die "GA_REACHED must be 0 or 1, as apex-image's Containerfile sets it; got '${GA_REACHED:-}'"
+    GA_REACHED=${GA_REACHED:-1}
+    [[ $GA_REACHED == [01] ]] || die "GA_REACHED must be 0 or 1, or unset after Fedora 45 GA; got '$GA_REACHED'"
     TESTING_INCLUDEPKGS=${TESTING_INCLUDEPKGS:-}
     export GA_REACHED TESTING_INCLUDEPKGS
     log "GA_REACHED=$GA_REACHED; updates-testing allowlist: ${TESTING_INCLUDEPKGS:-<empty>}"
