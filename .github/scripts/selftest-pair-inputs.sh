@@ -31,11 +31,11 @@ cat >"$M/bin/rpmkeys" <<'EOF'
 db=$2
 shift 2
 case $1 in
-    --import) sed -n 's/^fpr=//p' "$2" >>"$db/keys" ;;
+    --import) sed -n 's/^fpr=//p' "$2" >>"$db/keys"; sed -n 's/^sub=//p' "$2" >>"$db/subs" ;;
     --list) sed 's/$/ fake key/' "$db/keys" ;;
     -K)
         file=${!#}
-        if grep -qxF -- "$(sed -n 's/^signer=//p' "$file")" "$db/keys"; then
+        if grep -qxF -- "$(sed -n 's/^signer=//p' "$file")" "$db/keys" "$db/subs" 2>/dev/null; then
             echo "$file: digests signatures OK"
         else
             echo "$file: digests SIGNATURES NOT OK"
@@ -54,6 +54,19 @@ EOF
 cat >"$M/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_GH/log"
+asset_id() { cksum <<<"$1/$2" | cut -d' ' -f1; }
+if [[ $1 == api && $2 == -X && $3 == DELETE ]]; then
+    want=${4##*/}
+    for f in "$FAKE_GH"/releases/*/*; do
+        t=${f%/*}
+        t=${t##*/}
+        [[ $(asset_id "$t" "${f##*/}") == "$want" ]] || continue
+        rm -f -- "$f" "$FAKE_GH/states/$t/${f##*/}"
+        exit 0
+    done
+    echo "HTTP 404: Not Found" >&2
+    exit 1
+fi
 if [[ $1 == api ]]; then
     [[ ! -e $FAKE_GH/fail-api ]] || { echo "HTTP 502: Bad Gateway (https://api.github.com/repos/x/releases)" >&2; exit 1; }
     tag=$(sed -n 's/.*tag_name == "\([^"]*\)".*/\1/p' <<<"$*")
@@ -62,7 +75,8 @@ if [[ $1 == api ]]; then
     if [[ -e $FAKE_GH/drafts/$tag ]]; then draft=true; else draft=false; fi
     printf 'release %s %s\n' "$(cksum <<<"$tag" | cut -d' ' -f1)" "$draft"
     for f in "$rel"/*; do
-        [[ -e $f ]] && printf 'asset %s %s\n' "$(cat "$FAKE_GH/states/$tag/${f##*/}" 2>/dev/null || echo uploaded)" "${f##*/}"
+        [[ -e $f ]] && printf 'asset %s %s %s\n' "$(cat "$FAKE_GH/states/$tag/${f##*/}" 2>/dev/null || echo uploaded)" \
+            "$(asset_id "$tag" "${f##*/}")" "${f##*/}"
     done
     [[ ! -e $FAKE_GH/dups/$tag ]] || printf 'release 9999 false\n'
     exit 0
@@ -89,14 +103,25 @@ case $cmd in
         [[ ! -d $rel ]] || exit 1
         mkdir -p "$rel"
         : >"$FAKE_GH/drafts/$tag"
-        if [[ -n ${FAKE_GH_KILL_AFTER:-} ]]; then cp -- "${files[@]:0:$FAKE_GH_KILL_AFTER}" "$rel/"; exit 137; fi
+        if [[ -n ${FAKE_GH_KILL_AFTER:-} ]]; then
+            cp -- "${files[@]:0:$FAKE_GH_KILL_AFTER}" "$rel/"
+            if [[ -n ${FAKE_GH_STUB:-} ]]; then
+                stub=${files[$FAKE_GH_KILL_AFTER]}
+                head -c 3 -- "$stub" >"$rel/${stub##*/}"
+                mkdir -p "$FAKE_GH/states/$tag"
+                echo starter >"$FAKE_GH/states/$tag/${stub##*/}"
+            fi
+            exit 137
+        fi
         cp -- "${files[@]}" "$rel/"
         rm -f "$FAKE_GH/drafts/$tag" ;;
     upload)
         [[ ! -e $FAKE_GH/dup-on-write ]] || : >"$FAKE_GH/dups/$tag"
         for f in "${files[@]}"; do [[ ! -e $rel/${f##*/} ]] || { echo "asset ${f##*/} exists" >&2; exit 1; }; done
         cp -- "${files[@]}" "$rel/" ;;
-    download) [[ -f $rel/$pattern ]] || { echo "no asset $pattern" >&2; exit 1; }; cp -- "$rel/$pattern" "$dir/" ;;
+    download) [[ ! -e $FAKE_GH/fail-download && $(cat "$FAKE_GH/fail-download-of" 2>/dev/null) != "$pattern" ]] ||
+        { echo "HTTP 503: Service Unavailable" >&2; exit 1; }
+        [[ -f $rel/$pattern ]] || { echo "no asset $pattern" >&2; exit 1; }; cp -- "$rel/$pattern" "$dir/" ;;
     edit) rm -f "$FAKE_GH/drafts/$tag" ;;
 esac
 EOF
@@ -171,6 +196,11 @@ for tool in awk cmp curl find gh grep rpmkeys sed sha256sum; do
     check_true "pair-inputs: $tool is checked before it is needed" grep -q " ${tool}[ ;]" <<<"$(grep 'for tool in' "$KERNEL_SRC/pair-inputs.sh")"
 done
 
+if [[ -n ${STANDALONE:-} ]]; then
+    check "pair-inputs: every tool main() checks for is on the real PATH, the faked ones too" "" \
+        "$(read -ra tools <<<"$(sed -n 's/.*for tool in \(.*\); do$/\1/p' "$KERNEL_SRC/pair-inputs.sh")"
+            for tool in "${tools[@]}"; do command -v "$tool" >/dev/null || printf '%s ' "$tool"; done)"
+fi
 check "pair-inputs: every tool it needs and nothing fakes is installed" "" \
     "$(for tool in awk cmp find grep sed sha256sum; do command -v "$tool" >/dev/null || printf '%s ' "$tool"; done)"
 
@@ -307,6 +337,59 @@ mv "$M/kmod.keep" "$M/http/$(key_of "$KMOD_URL")"
 : >"$M/http/$(key_of "$KMOD_URL").down"
 check "pair-inputs: an upstream it cannot reach is refused" 1 "$(fresh drop && inputs collect "$M/drop")"
 rm "$M/http/$(key_of "$KMOD_URL").down"
+
+# --- a create killed mid-upload, and gh errors in the fallback ------------------------------
+K3_SUM=$(pin_file "$COPR/fedora-45-x86_64/Packages/k/kernel-cachyos-7.3.2-1.cachyos1.fc45.src.rpm" "$COPR_FPR" kernel-cachyos-0:7.3.2-1.cachyos1.fc45.src)
+sed -i "s/^srpm=.*/srpm=kernel-cachyos-0:7.3.2-1.cachyos1.fc45.src/; s/^srpm_sha256=.*/srpm_sha256=$K3_SUM/" "$M/kernel/kernel.env"
+K3TAG=pair-inputs-kernel-kernel-cachyos-7.3.2-1.cachyos1.fc45
+check_true "pair-inputs: another kernel verifies" collected k3
+check "pair-inputs: a create killed during an upload" 2 "$(inputs publish "$M/k3" FAKE_GH_KILL_AFTER=1 FAKE_GH_STUB=1)"
+check "pair-inputs: leaves a draft with an unfinished asset" "starter" "$(cat "$M/gh/states/$K3TAG"/* | paste -sd' ')"
+: >"$M/gh/log"
+check "pair-inputs: the re-run finishes it" 0 "$(inputs publish "$M/k3")"
+check "pair-inputs: deleting the draft's unfinished asset, its one delete" "1 1" \
+    "$(grep -c '^api -X DELETE ' "$M/gh/log") $(grep -c "| an unfinished upload in the draft $K3TAG | deleted |$" "$M/summary")"
+check "pair-inputs: uploading that file whole, and publishing" "0 ok" \
+    "$(find "$M/gh/drafts" -name "$K3TAG" | wc -l) $(cmp -s "$M/gh/releases/$K3TAG/kernel-cachyos-7.3.2-1.cachyos1.fc45.src.rpm.sha256" "$M/k3/kernel/kernel-cachyos-7.3.2-1.cachyos1.fc45.src.rpm.sha256" && cmp -s "$M/gh/releases/$K3TAG/kernel-cachyos-7.3.2-1.cachyos1.fc45.src.rpm" "$M/k3/kernel/kernel-cachyos-7.3.2-1.cachyos1.fc45.src.rpm" && echo ok)"
+check "pair-inputs: whole" "kernel-cachyos-7.3.2-1.cachyos1.fc45.src.rpm kernel-cachyos-7.3.2-1.cachyos1.fc45.src.rpm.sha256 pubkey.gpg pubkey.gpg.sha256" "$(release_files "$K3TAG")"
+
+mv "$M/http/$(key_of "$KMOD_URL")" "$M/kmod.keep"
+: >"$M/gh/fail-api"
+check "pair-inputs: a fallback whose release list fails cannot run" 2 "$(fresh drop && inputs collect "$M/drop")"
+check_true "pair-inputs: naming the gh error" grep -q "cannot list the releases of apex-linux/apex-kernel: HTTP 502" "$M/out"
+rm "$M/gh/fail-api"
+: >"$M/gh/fail-download"
+check "pair-inputs: a fallback whose download fails cannot run" 2 "$(fresh drop && inputs collect "$M/drop")"
+check "pair-inputs: naming it" "pair-inputs.sh cannot run: cannot download $KMOD from $NTAG: HTTP 503: Service Unavailable " "$(last)"
+rm "$M/gh/fail-download"
+mkdir -p "$M/gh/states/$NTAG"
+echo starter >"$M/gh/states/$NTAG/$KMOD"
+check "pair-inputs: a release copy that never finished uploading is not taken" 1 "$(fresh drop && inputs collect "$M/drop")"
+check "pair-inputs: naming both" "pair-inputs.sh: $KMOD_URL answers 404 and $NTAG holds no $KMOD" "$(last)"
+rm -r "$M/gh/states/$NTAG"
+mv "$M/kmod.keep" "$M/http/$(key_of "$KMOD_URL")"
+
+# --- a re-served key must still verify what it is added beside ----------------------------
+NEWSUB=2222222222222222222222222222222222222222
+D3_URL=$NEG/x86_64/nvidia-driver-620.70.06-3.fc45.x86_64.rpm
+printf 'fpr=%s\nsub=%s\n' "$NEGATIVO17_FPR" "$NEWSUB" | serve "$NEG_KEY_URL"
+D3_SUM=$(pin_file "$D3_URL" "$NEWSUB" nvidia-driver-3:620.70.06-3.fc45.x86_64)
+sed -i "s/^userspace=nvidia-driver-3:.*/userspace=nvidia-driver-3:620.70.06-3.fc45.x86_64 $D3_SUM/" "$M/kernel/nvidia.env"
+check_true "pair-inputs: a key re-served with a new subkey verifies an RPM it signed" collected sub
+: >"$M/gh/log"
+check "pair-inputs: but the held key without that subkey refuses adding it" "1 0" "$(inputs publish "$M/sub") $(gh_writes)"
+check "pair-inputs: naming the RPM" "pair-inputs.sh: $NTAG holds an older RPM-GPG-KEY-slaanesh that does not verify nvidia-driver-620.70.06-3.fc45.x86_64.rpm" "$(last)"
+D3_SUM=$(pin_file "$D3_URL" "$NEGATIVO17_FPR" nvidia-driver-3:620.70.06-3.fc45.x86_64)
+sed -i "s/^userspace=nvidia-driver-3:.*/userspace=nvidia-driver-3:620.70.06-3.fc45.x86_64 $D3_SUM/" "$M/kernel/nvidia.env"
+check_true "pair-inputs: one signed by the primary key" collected sub
+check "pair-inputs: is added beside the held key" "0 1" "$(inputs publish "$M/sub") $(gh_writes)"
+echo RPM-GPG-KEY-slaanesh.sha256 >"$M/gh/fail-download-of"
+: >"$M/gh/log"
+check "pair-inputs: a held key's .sha256 gh cannot download stops the run, not a refusal" "2 0" "$(inputs publish "$M/sub") $(gh_writes)"
+check "pair-inputs: naming the gh error" "pair-inputs.sh cannot run: cannot download RPM-GPG-KEY-slaanesh.sha256 from $NTAG: HTTP 503: Service Unavailable " "$(last)"
+rm "$M/gh/fail-download-of"
+serve "$NEG_KEY_URL" <<<"fpr=$NEGATIVO17_FPR"
+sed -i "s/^userspace=nvidia-driver-3:.*/userspace=nvidia-driver-3:620.70.06-1.fc45.x86_64 $D_SUM/" "$M/kernel/nvidia.env"
 
 # --- collect refuses what is not the pin --------------------------------------------------
 wrong() { # NAME URL CONTENT-COMMAND EXPECTED-REASON: collect refuses a served input

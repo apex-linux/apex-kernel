@@ -31,7 +31,8 @@ publish   for each side, compares every asset the release already holds under on
           DIR's names, then uploads the ones it lacks and publishes a draft that an
           interrupted run left. A differing asset refuses the whole publish before
           anything is uploaded; a re-served key passes when the held one is still the
-          pinned fingerprint.
+          pinned fingerprint and verifies every RPM this run adds. The one delete it
+          ever makes is of an unfinished upload in a draft, which was never public.
 
 Each file's verdict (verified, refused, present, added, published) goes to stdout and,
 in Actions, to the job summary. Exit 1 when an input fails its pin or a release differs;
@@ -96,16 +97,23 @@ fetch() {
         200) ;;
         404 | 410)
             rm -f -- "$to"
-            if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "${to##*/}" --dir "${to%/*}" 2>/dev/null ||
-                [[ ! -f $to ]]; then
+            list_release "$tag"
+            if [[ $(grep -c . <<<"$listed") != 1 ]] || ! grep -qE "^uploaded [0-9]+ ${to##*/}\$" <<<"$assets"; then
                 verdict refused "${to##*/}" "upstream $code, not in $tag"
                 refuse "$url answers $code and $tag holds no ${to##*/}"
             fi
+            download "$tag" "${to##*/}" "${to%/*}"
             from_release+=" ${to##*/}" ;;
         *)
             verdict refused "${to##*/}" "upstream $code"
             refuse "$url answers $code" ;;
     esac
+}
+
+download() {
+    local tag=$1 name=$2 dir=$3 err
+    err=$(gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$dir" --clobber 2>&1) ||
+        cannot "cannot download $name from $tag: $(tr '\n' ' ' <<<"$err")"
 }
 
 source_of() { [[ " $from_release " == *" ${1##*/} "* ]] && printf ' (from its release)' || true; }
@@ -173,24 +181,23 @@ collect() {
 }
 
 # The release's key differs from upstream's: it passes if it is still exactly the pinned
-# fingerprint and its held .sha256 matches it.
+# fingerprint and its held .sha256 matches it. Sets held_db to a keyring of it.
 held_key_passes() {
-    local tag=$1 key=$2 pinned=$3 got=$4 db
-    gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$key" --dir "$got" --clobber 2>/dev/null &&
-        gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$key.sha256" --dir "$got" --clobber 2>/dev/null ||
-        return 1
-    db=$(mktemp -d)
-    rpmkeys --dbpath "$db" --import "$got/$key" 2>/dev/null &&
-        [[ $(rpmkeys --dbpath "$db" --list | awk '{print $1}') == "${pinned,,}" ]] &&
+    local tag=$1 key=$2 pinned=$3 got=$4
+    download "$tag" "$key" "$got"
+    download "$tag" "$key.sha256" "$got"
+    held_db=$(mktemp -d)
+    rpmkeys --dbpath "$held_db" --import "$got/$key" 2>/dev/null &&
+        [[ $(rpmkeys --dbpath "$held_db" --list | awk '{print $1}') == "${pinned,,}" ]] &&
         (cd -- "$got" && sha256sum --check --strict --quiet -- "$key.sha256" >/dev/null 2>&1)
 }
 
 # gh release view merges its tag and draft lookups, so a flaky draft lookup reads as
-# not found; the REST list holds drafts too. Sets listed to "ID DRAFT" lines and assets.
+# not found; the REST list holds drafts too. Sets listed ("ID DRAFT") and assets ("STATE ID NAME").
 list_release() {
     local tag=$1 out
     out=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-        --jq ".[] | select(.tag_name == \"$tag\") | \"release \\(.id) \\(.draft)\", (.assets[] | \"asset \\(.state) \\(.name)\")" 2>&1) ||
+        --jq ".[] | select(.tag_name == \"$tag\") | \"release \\(.id) \\(.draft)\", (.assets[] | \"asset \\(.state) \\(.id) \\(.name)\")" 2>&1) ||
         cannot "cannot list the releases of $GITHUB_REPOSITORY: $(tr '\n' ' ' <<<"$out")"
     listed=$(sed -n 's/^release //p' <<<"$out")
     assets=$(sed -n 's/^asset //p' <<<"$out")
@@ -207,7 +214,7 @@ one_release() {
 # Sets plan[SIDE] to "new", or to the files of DIR/SIDE the release lacks, and draft[SIDE]
 # and id[SIDE]; refuses on a differing asset, an unfinished upload or a tag of two releases.
 compare_side() {
-    local dir=$1 side=$2 tag=$3 key=$4 pinned=$5 existing name state got file
+    local dir=$1 side=$2 tag=$3 key=$4 pinned=$5 existing name state asset got file held_db=
     list_release "$tag"
     case $(grep -c . <<<"$listed") in
         0) plan[$side]=new draft[$side]=false id[$side]= ; return ;;
@@ -216,14 +223,20 @@ compare_side() {
             refuse "$tag names $(grep -c . <<<"$listed") releases" ;;
     esac
     id[$side]=${listed%% *} draft[$side]=${listed##* }
-    existing=$assets
-    while read -r state name; do
-        [[ -z $name || $state == uploaded ]] || {
+    existing=
+    while read -r state asset name; do
+        [[ -n $name ]] || continue
+        if [[ $state == uploaded ]]; then
+            existing+="$name"$'\n'
+        elif [[ ${draft[$side]} == true ]]; then
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset" >/dev/null ||
+                cannot "cannot delete the unfinished $name from the draft $tag"
+            verdict deleted "$name" "an unfinished upload in the draft $tag"
+        else
             verdict refused "$name" "$tag holds it in state $state"
             refuse "$tag holds $name in state $state, an interrupted upload"
-        }
-    done <<<"$existing"
-    existing=$(cut -d' ' -f2- <<<"$existing")
+        fi
+    done <<<"$assets"
     plan[$side]=
     got=$(mktemp -d)
     for file in "$dir/$side"/*; do
@@ -232,8 +245,7 @@ compare_side() {
             plan[$side]+="$name"$'\n'
             continue
         fi
-        gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$got" --clobber ||
-            cannot "cannot download $name from $tag"
+        download "$tag" "$name" "$got"
         if cmp -s -- "$got/$name" "$file"; then
             verdict present "$name" "$tag"
         elif [[ $name == "$key" || $name == "$key.sha256" ]] && grep -qxF -- "$key.sha256" <<<"$existing" &&
@@ -244,6 +256,14 @@ compare_side() {
             refuse "$tag holds a different $name"
         fi
     done
+    [[ -n $held_db ]] || return 0
+    while read -r name; do
+        [[ $name == *.rpm ]] || continue
+        rpmkeys --dbpath "$held_db" -K -- "$dir/$side/$name" 2>&1 | grep -q 'digests signatures OK$' || {
+            verdict refused "$name" "$tag's held $key does not verify it"
+            refuse "$tag holds an older $key that does not verify $name"
+        }
+    done <<<"${plan[$side]}"
 }
 
 publish() {
