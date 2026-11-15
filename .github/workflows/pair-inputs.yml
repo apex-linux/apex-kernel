@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: pair-inputs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packaging/pkgs/kernel/kernel.env
+      - packaging/pkgs/kernel/nvidia.env
+      - packaging/pkgs/kernel/fedora-*/kernel.env
+      - packaging/pkgs/kernel/fedora-*/nvidia.env
+      - packaging/pkgs/kernel/pair-inputs.sh
+      - .github/workflows/pair-inputs.yml
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: pair-inputs
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: pair-inputs mirror
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: registry.fedoraproject.org/fedora:45@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tools
+        run: |
+          read -ra packages <<<"$(packaging/pkgs/kernel/pair-inputs.sh packages)"
+          dnf5 -y -q --repo=fedora --repo=updates install "${packages[@]}"
+
+      - name: Collect and verify every release's pinned inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for fedora in $(packaging/pkgs/kernel/pair-inputs.sh releases); do
+            mkdir -- "$RUNNER_TEMP/pair-inputs-$fedora"
+            FEDORA=$fedora packaging/pkgs/kernel/pair-inputs.sh collect "$RUNNER_TEMP/pair-inputs-$fedora"
+          done
+
+      - name: Publish, adding only what each release lacks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for fedora in $(packaging/pkgs/kernel/pair-inputs.sh releases); do
+            FEDORA=$fedora packaging/pkgs/kernel/pair-inputs.sh publish "$RUNNER_TEMP/pair-inputs-$fedora"
+          done

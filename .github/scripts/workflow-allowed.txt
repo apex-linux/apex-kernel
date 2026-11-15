@@ -1,0 +1,3 @@
+# Write permissions a job needs, one per line: WORKFLOW JOB PERMISSION REASON, the PERMISSION as
+# the workflow writes it without spaces (contents:write). workflow-check.sh fails on a stale line.
+pair-inputs.yml mirror contents:write publishes the owner-approved pair-inputs mirror (2026-11-15): adds verified pinned inputs to a release, never replaces one

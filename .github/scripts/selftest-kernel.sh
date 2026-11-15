@@ -665,3 +665,6 @@ check "bump: FEDORA=46 refuses a chroot of 45" "bump.sh cannot run: kernel.env's
     "$(bump46 check | tail -n 1)"
 rm -r "$B/kernel/fedora-46"
 
+
+# shellcheck source=.github/scripts/selftest-pair-inputs.sh
+. "$(dirname "${BASH_SOURCE[0]}")/selftest-pair-inputs.sh"

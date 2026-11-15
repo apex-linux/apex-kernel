@@ -35,6 +35,9 @@ jobs:
       - name: actionlint
         run: actionlint -config-file .github/scripts/actionlint.yaml
 
+      - name: Workflow permissions, timeouts and pins
+        run: .github/scripts/workflow-check.sh .github/workflows .github/scripts/workflow-allowed.txt
+
       - name: bash -n and shellcheck
         run: |
           files=(.github/scripts/*.sh packaging/libfprint/build.sh packaging/pkgs/kernel/*.sh)
@@ -43,6 +46,27 @@ jobs:
 
       - name: Script self-tests
         run: .github/scripts/selftest.sh
+
+  pair-inputs:
+    name: pair-inputs in its job's container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: registry.fedoraproject.org/fedora:45@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The mirror job's packages, as pair-inputs.yml installs them
+        run: |
+          read -ra packages <<<"$(packaging/pkgs/kernel/pair-inputs.sh packages)"
+          dnf5 -y -q --repo=fedora --repo=updates install "${packages[@]}"
+
+      - name: pair-inputs.sh's self-tests
+        run: .github/scripts/selftest-pair-inputs.sh
 
   privacy:
     name: No biometric files
