@@ -185,19 +185,38 @@ held_key_passes() {
         (cd -- "$got" && sha256sum --check --strict --quiet -- "$key.sha256" >/dev/null 2>&1)
 }
 
-# Sets plan[SIDE] to "new", or to the files of DIR/SIDE the release lacks, and draft[SIDE];
-# refuses on a differing asset or an unfinished upload.
+# gh release view merges its tag and draft lookups, so a flaky draft lookup reads as
+# not found; the REST list holds drafts too. Sets listed to "ID DRAFT" lines and assets.
+list_release() {
+    local tag=$1 out
+    out=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+        --jq ".[] | select(.tag_name == \"$tag\") | \"release \\(.id) \\(.draft)\", (.assets[] | \"asset \\(.state) \\(.name)\")" 2>&1) ||
+        cannot "cannot list the releases of $GITHUB_REPOSITORY: $(tr '\n' ' ' <<<"$out")"
+    listed=$(sed -n 's/^release //p' <<<"$out")
+    assets=$(sed -n 's/^asset //p' <<<"$out")
+}
+
+# After a write, TAG must still name exactly one release, and ID when given.
+one_release() {
+    local tag=$1 id=${2:-}
+    list_release "$tag"
+    [[ $(grep -c . <<<"$listed") == 1 && ( -z $id || ${listed%% *} == "$id" ) ]] ||
+        refuse "$tag names $(grep -c . <<<"$listed") releases after the write, not the one it wrote to"
+}
+
+# Sets plan[SIDE] to "new", or to the files of DIR/SIDE the release lacks, and draft[SIDE]
+# and id[SIDE]; refuses on a differing asset, an unfinished upload or a tag of two releases.
 compare_side() {
-    local dir=$1 side=$2 tag=$3 key=$4 pinned=$5 view err existing name state got file
-    err=$(mktemp)
-    if ! view=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
-        --jq '"draft \(.isDraft)", (.assets[] | "\(.state) \(.name)")' 2>"$err"); then
-        grep -qi 'release not found' "$err" || cannot "cannot read the release $tag: $(tr '\n' ' ' <"$err")"
-        plan[$side]=new draft[$side]=false
-        return
-    fi
-    draft[$side]=$(sed -n 's/^draft //p' <<<"$view")
-    existing=$(sed '1d' <<<"$view")
+    local dir=$1 side=$2 tag=$3 key=$4 pinned=$5 existing name state got file
+    list_release "$tag"
+    case $(grep -c . <<<"$listed") in
+        0) plan[$side]=new draft[$side]=false id[$side]= ; return ;;
+        1) ;;
+        *) verdict refused "$tag" "names $(grep -c . <<<"$listed") releases"
+            refuse "$tag names $(grep -c . <<<"$listed") releases" ;;
+    esac
+    id[$side]=${listed%% *} draft[$side]=${listed##* }
+    existing=$assets
     while read -r state name; do
         [[ -z $name || $state == uploaded ]] || {
             verdict refused "$name" "$tag holds it in state $state"
@@ -239,7 +258,7 @@ publish() {
     local -A tags=([kernel]=$(kernel_tag) [nvidia]=$(nvidia_tag))
     local -A keys=([kernel]=$COPR_KEY_FILE [nvidia]=$NEGATIVO17_KEY_FILE)
     local -A pins=([kernel]=$(env_value "$kernel_env" copr_key) [nvidia]=$(env_value "$nvidia_env" negativo17_key))
-    declare -gA plan=() draft=()
+    declare -gA plan=() draft=() id=()
     for side in kernel nvidia; do
         compare_side "$dir" "$side" "${tags[$side]}" "${keys[$side]}" "${pins[$side]}"
     done
@@ -251,14 +270,18 @@ publish() {
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$tag" --target "${GITHUB_SHA:-main}" \
                 --notes "Pinned pair inputs, each verified against kernel.env and nvidia.env before upload. Assets are never replaced." \
                 -- "${files[@]}" >/dev/null || cannot "cannot create the release $tag"
+            one_release "$tag"
         else
             while read -r name; do [[ -z $name ]] || files+=("$dir/$side/$name"); done <<<"${plan[$side]}"
             ((${#files[@]} == 0)) ||
                 gh release upload "$tag" --repo "$GITHUB_REPOSITORY" -- "${files[@]}" >/dev/null || cannot "cannot upload to $tag"
+            ((${#files[@]} == 0)) || one_release "$tag" "${id[$side]}"
         fi
         for name in "${files[@]}"; do verdict added "${name##*/}" "$tag"; done
         if [[ ${draft[$side]} == true ]]; then
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false >/dev/null || cannot "cannot publish the draft $tag"
+            one_release "$tag" "${id[$side]}"
+            [[ ${listed##* } == false ]] || refuse "$tag is still a draft after gh release edit"
             verdict published "$tag" "a draft an interrupted run left"
         fi
     done

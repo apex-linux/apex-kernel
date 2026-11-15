@@ -24,7 +24,7 @@ NEGATIVO17_FPR=0c5d0f470484ae2fc40a9b6597f3008993e8909b
 OTHER_FPR=1111111111111111111111111111111111111111
 
 M="$TMP/pair-inputs"
-mkdir -p "$M/bin" "$M/kernel" "$M/http" "$M/gh/releases" "$M/gh/drafts" "$M/gh/states"
+mkdir -p "$M/bin" "$M/kernel" "$M/http" "$M/gh/releases" "$M/gh/drafts" "$M/gh/states" "$M/gh/dups"
 cp "$KERNEL_SRC/pair-inputs.sh" "$M/kernel/"
 cat >"$M/bin/rpmkeys" <<'EOF'
 #!/usr/bin/env bash
@@ -54,8 +54,25 @@ EOF
 cat >"$M/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_GH/log"
+if [[ $1 == api ]]; then
+    [[ ! -e $FAKE_GH/fail-api ]] || { echo "HTTP 502: Bad Gateway (https://api.github.com/repos/x/releases)" >&2; exit 1; }
+    tag=$(sed -n 's/.*tag_name == "\([^"]*\)".*/\1/p' <<<"$*")
+    rel=$FAKE_GH/releases/$tag
+    [[ -d $rel ]] || exit 0
+    if [[ -e $FAKE_GH/drafts/$tag ]]; then draft=true; else draft=false; fi
+    printf 'release %s %s\n' "$(cksum <<<"$tag" | cut -d' ' -f1)" "$draft"
+    for f in "$rel"/*; do
+        [[ -e $f ]] && printf 'asset %s %s\n' "$(cat "$FAKE_GH/states/$tag/${f##*/}" 2>/dev/null || echo uploaded)" "${f##*/}"
+    done
+    [[ ! -e $FAKE_GH/dups/$tag ]] || printf 'release 9999 false\n'
+    exit 0
+fi
 cmd=$2 tag=$3 rel=$FAKE_GH/releases/$3
 shift 3
+if [[ -e $FAKE_GH/graphql-down && -e $FAKE_GH/drafts/$tag && $cmd != create ]]; then
+    echo "release not found" >&2
+    exit 1
+fi
 files=() pattern= dir=
 while (($#)); do
     case $1 in
@@ -68,14 +85,6 @@ while (($#)); do
     esac
 done
 case $cmd in
-    view)
-        [[ ! -e $FAKE_GH/fail-view ]] || { echo "HTTP 502: Bad Gateway (https://api.github.com/repos/x/releases)" >&2; exit 1; }
-        [[ -d $rel ]] || { echo "release not found" >&2; exit 1; }
-        if [[ -e $FAKE_GH/drafts/$tag ]]; then echo "draft true"; else echo "draft false"; fi
-        for f in "$rel"/*; do
-            [[ -e $f ]] || continue
-            printf '%s %s\n' "$(cat "$FAKE_GH/states/$tag/${f##*/}" 2>/dev/null || echo uploaded)" "${f##*/}"
-        done ;;
     create)
         [[ ! -d $rel ]] || exit 1
         mkdir -p "$rel"
@@ -84,6 +93,7 @@ case $cmd in
         cp -- "${files[@]}" "$rel/"
         rm -f "$FAKE_GH/drafts/$tag" ;;
     upload)
+        [[ ! -e $FAKE_GH/dup-on-write ]] || : >"$FAKE_GH/dups/$tag"
         for f in "${files[@]}"; do [[ ! -e $rel/${f##*/} ]] || { echo "asset ${f##*/} exists" >&2; exit 1; }; done
         cp -- "${files[@]}" "$rel/" ;;
     download) [[ -f $rel/$pattern ]] || { echo "no asset $pattern" >&2; exit 1; }; cp -- "$rel/$pattern" "$dir/" ;;
@@ -245,6 +255,12 @@ check_true "pair-inputs: a newer kernel verifies" collected k2
 : >"$M/gh/log"
 check "pair-inputs: a create killed during its upload fails the run" 2 "$(inputs publish "$M/k2" FAKE_GH_KILL_AFTER=1)"
 check "pair-inputs: and leaves a draft holding part of it" "1 1" "$(find "$M/gh/drafts" -name "$K2TAG" | wc -l) $(find "$M/gh/releases/$K2TAG" -type f | wc -l)"
+: >"$M/gh/graphql-down"
+: >"$M/gh/log"
+check "pair-inputs: with gh's draft lookup down, the re-run stops" 2 "$(inputs publish "$M/k2")"
+check "pair-inputs: and creates no second release beside the draft" "0 1" \
+    "$(grep -c '^release create ' "$M/gh/log") $(PATH="$M/bin:$PATH" FAKE_GH="$M/gh" gh api --paginate "repos/x/releases" --jq "select(.tag_name == \"$K2TAG\")" | grep -c '^release ')"
+rm "$M/gh/graphql-down"
 check "pair-inputs: the re-run finishes it" 0 "$(inputs publish "$M/k2")"
 check "pair-inputs: and publishes the draft" 0 "$(find "$M/gh/drafts" -name "$K2TAG" | wc -l)"
 check "pair-inputs: saying so in the summary" 1 "$(grep -c "^| $K2TAG | a draft an interrupted run left | published |$" "$M/summary")"
@@ -255,10 +271,20 @@ printf 'starter\n' >"$M/gh/states/$K2TAG/pubkey.gpg"
 check "pair-inputs: an asset an upload never finished is refused" "1 0" "$(inputs publish "$M/k2") $(gh_writes)"
 check "pair-inputs: naming its state" "pair-inputs.sh: $K2TAG holds pubkey.gpg in state starter, an interrupted upload" "$(last)"
 rm -r "$M/gh/states/$K2TAG"
-: >"$M/gh/fail-view"
-check "pair-inputs: a release gh cannot read stops the run" "2 0" "$(inputs publish "$M/k2") $(gh_writes)"
-check_true "pair-inputs: naming the error" grep -q "^pair-inputs.sh cannot run: cannot read the release $K2TAG: HTTP 502" "$M/out"
-rm "$M/gh/fail-view"
+: >"$M/gh/fail-api"
+: >"$M/gh/log"
+check "pair-inputs: a release list gh cannot read stops the run" "2 0" "$(inputs publish "$M/k2") $(gh_writes)"
+check_true "pair-inputs: naming the error" grep -q "^pair-inputs.sh cannot run: cannot list the releases of apex-linux/apex-kernel: HTTP 502" "$M/out"
+rm "$M/gh/fail-api"
+: >"$M/gh/dups/$K2TAG"
+check "pair-inputs: a tag that names two releases is refused" "1 0" "$(inputs publish "$M/k2") $(gh_writes)"
+check "pair-inputs: naming the count" "pair-inputs.sh: $K2TAG names 2 releases" "$(last)"
+rm "$M/gh/dups/$K2TAG"
+rm "$M/gh/releases/$K2TAG/pubkey.gpg.sha256"
+: >"$M/gh/dup-on-write"
+check "pair-inputs: a write that leaves the tag naming two releases is refused" 1 "$(inputs publish "$M/k2")"
+check "pair-inputs: after the write" "pair-inputs.sh: $K2TAG names 2 releases after the write, not the one it wrote to" "$(last)"
+rm "$M/gh/dup-on-write" "$M/gh/dups/$K2TAG"
 
 # --- collect: a file upstream dropped comes from its release ------------------------------
 mv "$M/http/$(key_of "$KMOD_URL")" "$M/kmod.keep"
