@@ -5,8 +5,8 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: pair-inputs.sh tags
-       pair-inputs.sh collect DIR
+usage: pair-inputs.sh tags | releases | packages
+       GITHUB_REPOSITORY=OWNER/REPO pair-inputs.sh collect DIR
        GITHUB_REPOSITORY=OWNER/REPO pair-inputs.sh publish DIR
 
 The pair's durable input mirror (owner-approved 2026-11-15): one GitHub release per
@@ -19,24 +19,32 @@ side, so that a kernel can pair with an older driver.
 Each file is an asset under the basename of its upstream URL, with <basename>.sha256
 beside it. A release only grows: nothing is replaced or deleted.
 
-tags     prints the two release names for the pins next to this script.
-collect  downloads both sides into DIR/kernel and DIR/nvidia, from the URLs apex-lane
-         fetches them from. Each key must be exactly its pinned fingerprint, each RPM
-         its pinned sha256 and signed by its pinned key alone. Only when every file of
-         both sides passes does it write the .sha256 files and DIR/verified.
-publish  for each side, compares every asset the release already holds under one of
-         DIR's names, then uploads the ones it lacks. A differing asset refuses the
-         whole publish before anything is uploaded.
+tags      prints the two release names for FEDORA's pins (45 when unset).
+releases  prints 45 and each N of a fedora-N/ next to this script that holds both pins.
+packages  prints the Fedora packages the job needs; pair-inputs.yml installs them.
+collect   downloads both sides into DIR/kernel and DIR/nvidia, from the URLs apex-lane
+          fetches them from. A file upstream answers with 404 or 410 is taken from its
+          side's release instead. Each key must be exactly its pinned fingerprint, each
+          RPM its pinned sha256 and signed by its pinned key alone. Only when every file
+          of both sides passes does it write the .sha256 files and DIR/verified.
+publish   for each side, compares every asset the release already holds under one of
+          DIR's names, then uploads the ones it lacks and publishes a draft that an
+          interrupted run left. A differing asset refuses the whole publish before
+          anything is uploaded; a re-served key passes when the held one is still the
+          pinned fingerprint.
 
-Each file's verdict (verified, refused, present, added) goes to stdout and, in Actions,
-to the job summary. Exit 1 when an input fails its pin or a release differs; the
-reason is on the last line. Exit 2 when the script cannot run.
+Each file's verdict (verified, refused, present, added, published) goes to stdout and,
+in Actions, to the job summary. Exit 1 when an input fails its pin or a release differs;
+the reason is on the last line. Exit 2 when the script cannot run.
 EOF
 }
 
 readonly COPR_RESULTS=https://download.copr.fedorainfracloud.org/results
 readonly NEGATIVO17_REPOS=https://negativo17.org/repos/nvidia
 readonly NEGATIVO17_KEY_URL=https://negativo17.org/repos/RPM-GPG-KEY-slaanesh
+readonly COPR_KEY_FILE=pubkey.gpg
+readonly NEGATIVO17_KEY_FILE=RPM-GPG-KEY-slaanesh
+readonly PACKAGES="coreutils curl diffutils findutils gawk gh grep rpm sed"
 
 cannot() { printf 'pair-inputs.sh cannot run: %s\n' "$*" >&2; exit 2; }
 refuse() { printf 'pair-inputs.sh: %s\n' "$*" >&2; exit 1; }
@@ -77,13 +85,30 @@ nvidia_tag() {
     printf 'pair-inputs-nvidia-%s-%s\n' "$version" "$release"
 }
 
+# Downloads URL to TO; a 404 or 410 takes the file from release TAG instead.
 fetch() {
-    local url=$1 to=$2
-    curl --fail --silent --show-error --location --retry 3 --output "$to" -- "$url" || {
-        verdict refused "${to##*/}" "not served"
+    local url=$1 to=$2 tag=$3 code
+    if ! code=$(curl --silent --show-error --location --retry 3 --output "$to" --write-out '%{http_code}' -- "$url"); then
+        verdict refused "${to##*/}" "not downloaded"
         refuse "cannot download $url"
-    }
+    fi
+    case $code in
+        200) ;;
+        404 | 410)
+            rm -f -- "$to"
+            if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "${to##*/}" --dir "${to%/*}" 2>/dev/null ||
+                [[ ! -f $to ]]; then
+                verdict refused "${to##*/}" "upstream $code, not in $tag"
+                refuse "$url answers $code and $tag holds no ${to##*/}"
+            fi
+            from_release+=" ${to##*/}" ;;
+        *)
+            verdict refused "${to##*/}" "upstream $code"
+            refuse "$url answers $code" ;;
+    esac
 }
+
+source_of() { [[ " $from_release " == *" ${1##*/} "* ]] && printf ' (from its release)' || true; }
 
 # Sets keyring_db to a keyring that holds KEY-FILE, which must be exactly PINNED.
 keyring() {
@@ -94,7 +119,7 @@ keyring() {
         verdict refused "${key_file##*/}" "not the pinned key"
         refuse "${key_file##*/} is not exactly the pinned key $pinned"
     fi
-    verdict verified "${key_file##*/}" "key $pinned"
+    verdict verified "${key_file##*/}" "key $pinned$(source_of "$key_file")"
 }
 
 verify_rpm() {
@@ -107,7 +132,7 @@ verify_rpm() {
         verdict refused "${file##*/}" "not signed by its pinned key"
         refuse "${file##*/} is not signed by its pinned key"
     fi
-    verdict verified "${file##*/}" "sha256 and signature"
+    verdict verified "${file##*/}" "sha256 and signature$(source_of "$file")"
 }
 
 negativo17_url() {
@@ -117,21 +142,22 @@ negativo17_url() {
 }
 
 collect() {
-    local dir=$1 copr chroot file nevra sha256 rest side name
+    local dir=$1 copr chroot file nevra sha256 rest side name ktag ntag
     [[ -d $dir && -z $(ls -A -- "$dir") ]] || cannot "$dir is not an empty directory"
     mkdir -- "$dir/kernel" "$dir/nvidia"
+    ktag=$(kernel_tag) ntag=$(nvidia_tag) from_release=
     copr=$(env_value "$kernel_env" copr)
     chroot=$(env_value "$kernel_env" chroot)
-    fetch "$COPR_RESULTS/$copr/pubkey.gpg" "$dir/kernel/pubkey.gpg"
-    keyring "$dir/kernel/pubkey.gpg" "$(env_value "$kernel_env" copr_key)"
+    fetch "$COPR_RESULTS/$copr/pubkey.gpg" "$dir/kernel/$COPR_KEY_FILE" "$ktag"
+    keyring "$dir/kernel/$COPR_KEY_FILE" "$(env_value "$kernel_env" copr_key)"
     file=$(file_of "$(env_value "$kernel_env" srpm)")
-    fetch "$COPR_RESULTS/$copr/$chroot/Packages/${file:0:1}/$file" "$dir/kernel/$file"
+    fetch "$COPR_RESULTS/$copr/$chroot/Packages/${file:0:1}/$file" "$dir/kernel/$file" "$ktag"
     verify_rpm "$dir/kernel/$file" "$(env_value "$kernel_env" srpm_sha256)" "$keyring_db"
-    fetch "$NEGATIVO17_KEY_URL" "$dir/nvidia/${NEGATIVO17_KEY_URL##*/}"
-    keyring "$dir/nvidia/${NEGATIVO17_KEY_URL##*/}" "$(env_value "$nvidia_env" negativo17_key)"
+    fetch "$NEGATIVO17_KEY_URL" "$dir/nvidia/$NEGATIVO17_KEY_FILE" "$ntag"
+    keyring "$dir/nvidia/$NEGATIVO17_KEY_FILE" "$(env_value "$nvidia_env" negativo17_key)"
     while read -r nevra sha256 rest; do
         [[ -n $sha256 && -z $rest ]] || cannot "nvidia.env has a malformed line for $nevra"
-        fetch "$(negativo17_url "$nevra")" "$dir/nvidia/$(file_of "$nevra")"
+        fetch "$(negativo17_url "$nevra")" "$dir/nvidia/$(file_of "$nevra")" "$ntag"
         verify_rpm "$dir/nvidia/$(file_of "$nevra")" "$sha256" "$keyring_db"
     done < <(printf '%s %s\n' "$(env_value "$nvidia_env" kmod_srpm)" "$(env_value "$nvidia_env" kmod_srpm_sha256)"
         sed -n 's/^userspace=//p' "$nvidia_env")
@@ -146,13 +172,39 @@ collect() {
     printf 'ok both sides verified: %s files\n' "$(($(wc -l <"$dir/verified")))"
 }
 
-# Sets plan[SIDE] to "new", or to the files of DIR/SIDE the release lacks; refuses on a differing one.
+# The release's key differs from upstream's: it passes if it is still exactly the pinned
+# fingerprint and its held .sha256 matches it.
+held_key_passes() {
+    local tag=$1 key=$2 pinned=$3 got=$4 db
+    gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$key" --dir "$got" --clobber 2>/dev/null &&
+        gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$key.sha256" --dir "$got" --clobber 2>/dev/null ||
+        return 1
+    db=$(mktemp -d)
+    rpmkeys --dbpath "$db" --import "$got/$key" 2>/dev/null &&
+        [[ $(rpmkeys --dbpath "$db" --list | awk '{print $1}') == "${pinned,,}" ]] &&
+        (cd -- "$got" && sha256sum --check --strict --quiet -- "$key.sha256" >/dev/null 2>&1)
+}
+
+# Sets plan[SIDE] to "new", or to the files of DIR/SIDE the release lacks, and draft[SIDE];
+# refuses on a differing asset or an unfinished upload.
 compare_side() {
-    local dir=$1 side=$2 tag=$3 existing name got file
-    if ! existing=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null); then
-        plan[$side]=new
+    local dir=$1 side=$2 tag=$3 key=$4 pinned=$5 view err existing name state got file
+    err=$(mktemp)
+    if ! view=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
+        --jq '"draft \(.isDraft)", (.assets[] | "\(.state) \(.name)")' 2>"$err"); then
+        grep -qi 'release not found' "$err" || cannot "cannot read the release $tag: $(tr '\n' ' ' <"$err")"
+        plan[$side]=new draft[$side]=false
         return
     fi
+    draft[$side]=$(sed -n 's/^draft //p' <<<"$view")
+    existing=$(sed '1d' <<<"$view")
+    while read -r state name; do
+        [[ -z $name || $state == uploaded ]] || {
+            verdict refused "$name" "$tag holds it in state $state"
+            refuse "$tag holds $name in state $state, an interrupted upload"
+        }
+    done <<<"$existing"
+    existing=$(cut -d' ' -f2- <<<"$existing")
     plan[$side]=
     got=$(mktemp -d)
     for file in "$dir/$side"/*; do
@@ -161,13 +213,17 @@ compare_side() {
             plan[$side]+="$name"$'\n'
             continue
         fi
-        gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$got" ||
+        gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$got" --clobber ||
             cannot "cannot download $name from $tag"
-        if ! cmp -s -- "$got/$name" "$file"; then
+        if cmp -s -- "$got/$name" "$file"; then
+            verdict present "$name" "$tag"
+        elif [[ $name == "$key" || $name == "$key.sha256" ]] && grep -qxF -- "$key.sha256" <<<"$existing" &&
+            held_key_passes "$tag" "$key" "$pinned" "$got"; then
+            verdict present "$name" "$tag (held key, same fingerprint)"
+        else
             verdict refused "$name" "$tag holds different bytes"
             refuse "$tag holds a different $name"
         fi
-        verdict present "$name" "$tag"
     done
 }
 
@@ -181,9 +237,11 @@ publish() {
         refuse "$dir holds files collect did not verify, or lacks some it did"
     [[ -z ${GITHUB_STEP_SUMMARY:-} ]] || printf '| Asset | Release | Verdict |\n|---|---|---|\n' >>"$GITHUB_STEP_SUMMARY"
     local -A tags=([kernel]=$(kernel_tag) [nvidia]=$(nvidia_tag))
-    declare -gA plan=()
+    local -A keys=([kernel]=$COPR_KEY_FILE [nvidia]=$NEGATIVO17_KEY_FILE)
+    local -A pins=([kernel]=$(env_value "$kernel_env" copr_key) [nvidia]=$(env_value "$nvidia_env" negativo17_key))
+    declare -gA plan=() draft=()
     for side in kernel nvidia; do
-        compare_side "$dir" "$side" "${tags[$side]}"
+        compare_side "$dir" "$side" "${tags[$side]}" "${keys[$side]}" "${pins[$side]}"
     done
     for side in kernel nvidia; do
         tag=${tags[$side]}
@@ -199,18 +257,36 @@ publish() {
                 gh release upload "$tag" --repo "$GITHUB_REPOSITORY" -- "${files[@]}" >/dev/null || cannot "cannot upload to $tag"
         fi
         for name in "${files[@]}"; do verdict added "${name##*/}" "$tag"; done
+        if [[ ${draft[$side]} == true ]]; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false >/dev/null || cannot "cannot publish the draft $tag"
+            verdict published "$tag" "a draft an interrupted run left"
+        fi
+    done
+}
+
+releases() {
+    local dir
+    printf '45\n'
+    for dir in "$here"/fedora-*/; do
+        [[ -f $dir/kernel.env && -f $dir/nvidia.env ]] || continue
+        dir=${dir%/}
+        printf '%s\n' "${dir##*/fedora-}"
     done
 }
 
 main() {
     case ${1:-} in
-        tags) (($# == 1)) || { usage >&2; exit 2; } ;;
+        tags | releases | packages) (($# == 1)) || { usage >&2; exit 2; } ;;
         collect | publish) (($# == 2)) || { usage >&2; exit 2; } ;;
         -h | --help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
-    local here tool
+    local tool
     here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+    case $1 in
+        packages) printf '%s\n' "$PACKAGES"; return ;;
+        releases) releases; return ;;
+    esac
     fedora=${FEDORA:-45}
     if [[ $fedora == 45 ]]; then
         kernel_env=$here/kernel.env nvidia_env=$here/nvidia.env
@@ -218,15 +294,16 @@ main() {
         kernel_env=$here/fedora-$fedora/kernel.env nvidia_env=$here/fedora-$fedora/nvidia.env
     fi
     [[ -f $kernel_env && -f $nvidia_env ]] || cannot "no kernel.env and nvidia.env for Fedora $fedora"
+    [[ $1 == tags ]] || for tool in awk cmp curl find gh grep rpmkeys sed sha256sum; do
+        command -v "$tool" >/dev/null || cannot "no $tool"
+    done
     case $1 in
         tags) kernel_tag; nvidia_tag ;;
         collect)
-            for tool in curl rpmkeys sha256sum; do command -v "$tool" >/dev/null || cannot "no $tool"; done
+            [[ -n ${GITHUB_REPOSITORY:-} ]] || cannot "GITHUB_REPOSITORY is not set"
             [[ -z ${GITHUB_STEP_SUMMARY:-} ]] || printf '| Asset | Check | Verdict |\n|---|---|---|\n' >>"$GITHUB_STEP_SUMMARY"
             collect "$2" ;;
-        publish)
-            for tool in gh sha256sum cmp; do command -v "$tool" >/dev/null || cannot "no $tool"; done
-            publish "$2" ;;
+        publish) publish "$2" ;;
     esac
 }
 
