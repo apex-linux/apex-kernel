@@ -163,8 +163,27 @@ shredded() { [[ ! -e $PAIR_KEY/signing_key.pem && -s $PAIR_KEY/signing_key.x509 
 
 run_pair
 check "pair: a good pair exits 0" 0 "$PAIR_RC"
-check_true "pair: the key's certificate names the .apexN release" \
-    grep -q '^subject=.*Apex kernel 7.3.0-4.cachyos1.apex1.fc45.x86_64 selftest$' "$PAIR_OUT/module-key.txt"
+check "pair: module-key.txt names the .apexN release and the pair id" \
+    "release=7.3.0-4.cachyos1.apex1.fc45.x86_64 pair_id=selftest" "$(head -n 2 "$PAIR_OUT/module-key.txt" | paste -sd' ')"
+check_true "pair: the key's CN is 12 hex of the pair id" \
+    grep -qx "subject=CN *= *Apex kernel module key $(printf selftest | sha256sum | cut -c1-12)" "$PAIR_OUT/module-key.txt"
+LANE_PAIR_ID=kernel-cachyos-7.3.0-4.cachyos1.fc45-s3d7444fe3588
+run_pair PAIR_ID=$LANE_PAIR_ID
+check "pair: the lane's pair id, which made a 97-byte CN, builds" 0 "$PAIR_RC"
+check_true "pair: its CN names the pair key's own hex" \
+    grep -qx 'subject=CN *= *Apex kernel module key 3d7444fe3588' "$PAIR_OUT/module-key.txt"
+check_true "pair: within RFC 5280's 64 bytes" \
+    test "$(sed -n 's/^subject=CN *= *//p' "$PAIR_OUT/module-key.txt" | tr -d '\n' | wc -c)" -le 64
+check "pair: and module-key.txt keeps the whole pair id" "pair_id=$LANE_PAIR_ID" "$(sed -n 2p "$PAIR_OUT/module-key.txt")"
+MK_DIR=$(mktemp -d -p "$SHM")
+check "module-key: a CN over 64 bytes is refused" 1 \
+    "$(rc_of "$KERNEL_SRC/module-key.sh" generate "$MK_DIR" "Apex kernel 7.3.0-4.cachyos1.apex1.fc45.x86_64 $LANE_PAIR_ID")"
+check "module-key: naming its length" \
+    "module-key.sh: the common name is 97 bytes; RFC 5280 allows 64: 'Apex kernel 7.3.0-4.cachyos1.apex1.fc45.x86_64 $LANE_PAIR_ID'" \
+    "$("$KERNEL_SRC/module-key.sh" generate "$MK_DIR" "Apex kernel 7.3.0-4.cachyos1.apex1.fc45.x86_64 $LANE_PAIR_ID" 2>&1 >/dev/null)"
+check "module-key: and writes no key" "" "$(ls -A "$MK_DIR")"
+check "module-key: 64 bytes is accepted" 0 "$(rc_of "$KERNEL_SRC/module-key.sh" generate "$MK_DIR" "$(printf 'k%.0s' {1..64})")"
+run_pair
 check "pair.lock names the kernel" kernel-cachyos-0:7.3.0-4.cachyos1.fc45.x86_64 \
     "$(sed -n 's/^kernel=//p' "$PAIR_OUT/pair.lock")"
 check "pair.lock names the kmod" kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-3:615.78.08-1.fc45.x86_64 \
@@ -399,8 +418,7 @@ sed -e 's/\.fc45\./.fc46./' \
     -e "s/^\(userspace=[^ ]*\) .*/\1 $(sha_of "$P/mirror/${USERSPACE/.fc45./.fc46.}")/" "$P/kernel/nvidia.env" >"$F46/nvidia.env"
 run_pair FEDORA=46
 check "pair: FEDORA=46 with fedora-46/ builds" 0 "$PAIR_RC"
-check_true "pair: FEDORA=46 names a .fc46 kernel" \
-    grep -q 'Apex kernel 7.3.0-4.cachyos1.apex1.fc46.x86_64 selftest$' "$PAIR_OUT/module-key.txt"
+check "pair: FEDORA=46 names a .fc46 kernel" "release=7.3.0-4.cachyos1.apex1.fc46.x86_64" "$(head -n 1 "$PAIR_OUT/module-key.txt")"
 check_true "pair: FEDORA=46's source set carries fedora-46's kernel.env" cmp "$F46/kernel.env" "$PAIR_OUT/source/recipe/kernel.env"
 check_true "pair: FEDORA=46's source set carries fedora-46's nvidia.env" cmp "$F46/nvidia.env" "$PAIR_OUT/source/recipe/nvidia.env"
 check_true "pair: FEDORA=46's source set holds the .fc46 SRPMs" \

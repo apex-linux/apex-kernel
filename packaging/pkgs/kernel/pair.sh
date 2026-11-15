@@ -43,8 +43,9 @@ kernel build's as OUT/debug/kernel.log. A reason
 that starts with "kmod:" is a kmod failure on a kernel that built. DNF-OPTIONs name
 the compose's repositories. FEDORA picks the pins: 45 reads kernel.env and nvidia.env
 next to pair.sh, any other release fedora-FEDORA/; their chroot and every NEVRA must
-be that release's. MODKEY_DIR defaults to /run/apex-modkey; PAIR_ID names
-the key's certificate.
+be that release's. MODKEY_DIR defaults to /run/apex-modkey. PAIR_ID (a timestamp
+when unset) and the release go into OUT/module-key.txt; the certificate's CN is
+"Apex kernel module key" and 12 hex of PAIR_ID, its s<hex> suffix or else its sha256.
 
 APEX_PAIR_FAULT=kmod is a test hook for the lane's rehearsals: the kmod build fails
 without running, and the job takes the kmod-failure path above. Unset or empty, it
@@ -174,11 +175,24 @@ on_exit() {
     write_timings
 }
 
+# RFC 5280 caps a commonName at 64: the CN names the key by 12 hex of the pair id, and
+# module-key.txt keeps the full release and pair id.
+key_common_name() {
+    local hex
+    if [[ $pair_id =~ -s([0-9a-f]{12})$ ]]; then
+        hex=${BASH_REMATCH[1]}
+    else
+        hex=$(printf '%s' "$pair_id" | sha256sum | cut -c1-12)
+    fi
+    printf 'Apex kernel module key %s\n' "$hex"
+}
+
 make_key() {
     local release=$1
     [[ -d $key_dir && -z $(ls -A -- "$key_dir") ]] || cannot "$key_dir is not an empty directory"
     key_made=1
-    "$here/module-key.sh" generate "$key_dir" "Apex kernel $release $pair_id" >"$out/module-key.txt" ||
+    printf 'release=%s\npair_id=%s\n' "$release" "$pair_id" >"$out/module-key.txt"
+    "$here/module-key.sh" generate "$key_dir" "$(key_common_name)" >>"$out/module-key.txt" ||
         cannot "module-key.sh could not make the job's key on $key_dir"
 }
 
