@@ -170,6 +170,60 @@ done
 check_false ".gitignore keeps the libfprint patches" \
     git -C "$APEX_ROOT" check-ignore -q --no-index packaging/libfprint/patches/README.md
 
+# --- workflow-check.sh: least permissions, timeouts and pinned actions ----------------------
+check "workflows: this checkout's pass" 0 \
+    "$(rc_of "$APEX_ROOT/.github/scripts/workflow-check.sh" "$APEX_ROOT/.github/workflows" "$APEX_ROOT/.github/scripts/workflow-allowed.txt")"
+WF=$TMP/workflows
+wf() { # EDIT: the check's exit on a fresh fixture workflow after EDIT ran in $WF, its errors in $WF.err
+    local rc=0
+    rm -rf "$WF" && mkdir -p "$WF/wf"
+    cat >"$WF/wf/ci.yml" <<'WF_EOF'
+name: ci
+on:
+  push: {}
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: echo build
+WF_EOF
+    printf '# WORKFLOW JOB PERMISSION REASON\n' >"$WF/allowed"
+    (cd "$WF" && eval "$1")
+    "$APEX_ROOT/.github/scripts/workflow-check.sh" "$WF/wf" "$WF/allowed" >/dev/null 2>"$WF.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "workflows: a fixture with every rule kept" 0 "$(wf :)"
+check "workflows: no top-level permissions: {}" 1 "$(wf "sed -i '/^permissions:/d' wf/ci.yml")"
+check_true "is named" grep -qF "wf/ci.yml: no top-level permissions: {}" "$WF.err"
+check "workflows: a job without permissions:" 1 "$(wf "sed -i '/^    permissions:/,/contents: read/d' wf/ci.yml")"
+check_true "names the job" grep -qF "wf/ci.yml:6: job build has no permissions:" "$WF.err"
+check "workflows: a job without timeout-minutes:" 1 "$(wf "sed -i '/timeout-minutes/d' wf/ci.yml")"
+check_true "names the job" grep -qF "wf/ci.yml:6: job build has no timeout-minutes:" "$WF.err"
+check "workflows: an action by tag" 1 "$(wf "sed -i 's/@3d3c[0-9a-f]* # v7.0.1/@v7/' wf/ci.yml")"
+check_true "names the line" grep -qF "wf/ci.yml:12: uses: 'actions/checkout@v7' is not pinned to a 40-hex commit" "$WF.err"
+check "workflows: a pinned action without its version comment" 1 "$(wf "sed -i 's/ # v7.0.1//' wf/ci.yml")"
+check "workflows: pull_request_target" 1 "$(wf "sed -i 's/  push: {}/  pull_request_target: {}/' wf/ci.yml")"
+check_true "is named" grep -qF "wf/ci.yml:3: pull_request_target runs with the base repository's secrets" "$WF.err"
+check "workflows: a write permission with no reason" 1 "$(wf "sed -i 's/contents: read/contents: write/' wf/ci.yml")"
+check_true "names the grant" grep -qF "wf/ci.yml:10: job build grants 'contents: write' with no reason in allowed" "$WF.err"
+check "workflows: write-all" 1 "$(wf "sed -i '/contents: read/d; s/^    permissions:$/    permissions: write-all/' wf/ci.yml")"
+check "workflows: an allowed write permission" 0 \
+    "$(wf "sed -i 's/contents: read/contents: write/' wf/ci.yml; printf 'ci.yml build contents:write  it pushes the tag\n' >>allowed")"
+check "workflows: an allow line no job needs" 1 "$(wf "printf 'ci.yml build contents:write  it pushes the tag\n' >>allowed")"
+check_true "names the stale line" grep -qF "allowed:2: ci.yml build contents:write is no longer granted" "$WF.err"
+check "workflows: an allow line without a reason" 1 "$(wf "printf 'ci.yml build contents:write\n' >>allowed")"
+check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" "$WF.err"
+check "workflows: pair-inputs' write is the mirror job's alone, on a push to main" \
+    "branches: [main]|contents: write|if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
+    "$(grep -hoE "contents: write|if: github.event_name == 'push' && github.ref == 'refs/heads/main'|branches: \[main\]" "$APEX_ROOT/.github/workflows/pair-inputs.yml" | LC_ALL=C sort -u | paste -sd'|')"
+check "workflows: no other workflow writes" "pair-inputs.yml" \
+    "$(grep -lE '^\s+[a-z-]+: write' "$APEX_ROOT"/.github/workflows/*.yml | xargs -n1 basename | paste -sd' ')"
+
 # shellcheck source=.github/scripts/selftest-kernel.sh
 . "$(dirname "${BASH_SOURCE[0]}")/selftest-kernel.sh"
 

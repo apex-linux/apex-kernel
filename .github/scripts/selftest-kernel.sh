@@ -637,3 +637,151 @@ check "bump: FEDORA=46 refuses a chroot of 45" "bump.sh cannot run: kernel.env's
     "$(bump46 check | tail -n 1)"
 rm -r "$B/kernel/fedora-46"
 
+
+# --- pair-inputs.sh: verify every input, then publish without replacing ------------------
+M="$TMP/pair-inputs"
+mkdir -p "$M/bin" "$M/kernel" "$M/http" "$M/gh/releases"
+cp "$KERNEL_SRC/pair-inputs.sh" "$M/kernel/"
+cp "$P/bin/rpmkeys" "$M/bin/"
+cat >"$M/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+out=
+while (($# > 1)); do [[ $1 != --output ]] || out=$2; shift; done
+file=$FAKE_HTTP/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')
+[[ -f $file ]] || { echo "fake curl: 404 for $1" >&2; exit 22; }
+cp "$file" "$out"
+EOF
+cat >"$M/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_GH/log"
+cmd=$2 rel=$FAKE_GH/releases/$3
+shift 3
+files=() pattern= dir=
+while (($#)); do
+    case $1 in
+        --pattern) pattern=$2; shift 2 ;;
+        --dir) dir=$2; shift 2 ;;
+        --) shift; files+=("$@"); break ;;
+        --*) shift 2 ;;
+        *) files+=("$1"); shift ;;
+    esac
+done
+case $cmd in
+    view) [[ -d $rel ]] || { echo "release not found" >&2; exit 1; }; ls -- "$rel" ;;
+    create) [[ ! -d $rel ]] && mkdir -p "$rel" && cp -- "${files[@]}" "$rel/" ;;
+    upload)
+        for f in "${files[@]}"; do [[ ! -e $rel/${f##*/} ]] || { echo "asset ${f##*/} exists" >&2; exit 1; }; done
+        cp -- "${files[@]}" "$rel/" ;;
+    download) cp -- "$rel/$pattern" "$dir/" ;;
+esac
+EOF
+chmod +x "$M/bin/curl" "$M/bin/gh"
+serve() { cat >"$M/http/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"; }
+COPR_RESULTS=https://download.copr.fedorainfracloud.org/results/bieszczaders/kernel-cachyos
+serve "$COPR_RESULTS/pubkey.gpg" <<<"fpr=$COPR_FPR"
+serve https://negativo17.org/repos/RPM-GPG-KEY-slaanesh <<<"fpr=$NEGATIVO17_FPR"
+pin_file() { # URL SIGNER NEVR: serves a fake RPM and prints its sha256
+    local tmp=$M/pin-tmp
+    fake_rpm_file "$tmp" "$2" "$3"
+    serve "$1" <"$tmp"
+    sha_of "$tmp"
+}
+K_SUM=$(pin_file "$COPR_RESULTS/fedora-45-x86_64/Packages/k/kernel-cachyos-7.3.0-4.cachyos1.fc45.src.rpm" "$COPR_FPR" kernel-cachyos-0:7.3.0-4.cachyos1.fc45.src)
+N_SUM=$(pin_file "$NEG/SRPMS/nvidia-kmod-620.70.06-1.fc45.src.rpm" "$NEGATIVO17_FPR" nvidia-kmod-3:620.70.06-1.fc45.src)
+D_SUM=$(pin_file "$NEG/x86_64/nvidia-driver-620.70.06-1.fc45.x86_64.rpm" "$NEGATIVO17_FPR" nvidia-driver-3:620.70.06-1.fc45.x86_64)
+S_SUM=$(pin_file "$NEG/x86_64/nvidia-driver-selinux-0.1-3.fc45.noarch.rpm" "$NEGATIVO17_FPR" nvidia-driver-selinux-0:0.1-3.fc45.noarch)
+cat >"$M/kernel/kernel.env" <<EOF
+copr=bieszczaders/kernel-cachyos
+chroot=fedora-45-x86_64
+srpm=kernel-cachyos-0:7.3.0-4.cachyos1.fc45.src
+srpm_sha256=$K_SUM
+copr_key=${COPR_FPR^^}
+EOF
+cat >"$M/kernel/nvidia.env" <<EOF
+kmod_srpm=nvidia-kmod-3:620.70.06-1.fc45.src
+kmod_srpm_sha256=$N_SUM
+userspace=nvidia-driver-3:620.70.06-1.fc45.x86_64 $D_SUM
+userspace=nvidia-driver-selinux-0:0.1-3.fc45.noarch $S_SUM
+negativo17_key=${NEGATIVO17_FPR^^}
+EOF
+TAG=pair-inputs-kernel-cachyos-7.3.0-4.cachyos1.fc45-620.70.06-1
+inputs() { # COMMAND DIR: pair-inputs.sh's exit, its output in $M/out
+    local rc=0
+    PATH="$M/bin:$PATH" FAKE_HTTP="$M/http" FAKE_GH="$M/gh" GITHUB_REPOSITORY=apex-linux/apex-kernel GITHUB_SHA=abc \
+        "$M/kernel/pair-inputs.sh" "$@" >"$M/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+fresh() { rm -rf "${M:?}/${1:?}" && mkdir "$M/$1"; }
+gh_writes() { grep -cE '^release (create|upload) ' "$M/gh/log" || true; }
+release_files() { find "$M/gh/releases/$TAG" -type f -printf '%P\n' | LC_ALL=C sort | paste -sd' '; }
+ALL_FILES="RPM-GPG-KEY-slaanesh SHA256SUMS kernel-cachyos-7.3.0-4.cachyos1.fc45.src.rpm nvidia-driver-620.70.06-1.fc45.x86_64.rpm nvidia-driver-selinux-0.1-3.fc45.noarch.rpm nvidia-kmod-620.70.06-1.fc45.src.rpm pubkey.gpg"
+
+check "pair-inputs: the tag names the kernel NVR and the kmod's version-release" "$TAG" \
+    "$(PATH="$M/bin:$PATH" "$M/kernel/pair-inputs.sh" tag)"
+fresh ok
+check "pair-inputs: every pinned input verifies" 0 "$(inputs collect "$M/ok")"
+check "pair-inputs: SHA256SUMS lists the two keys and four RPMs, each matching" "6 ok" \
+    "$(wc -l <"$M/ok/SHA256SUMS") $(cd "$M/ok" && sha256sum --check --strict --quiet SHA256SUMS && echo ok)"
+check "pair-inputs: SHA256SUMS holds the pinned sums" "$K_SUM $N_SUM $D_SUM $S_SUM" \
+    "$(for n in kernel-cachyos-7.3.0-4.cachyos1.fc45.src.rpm nvidia-kmod-620.70.06-1.fc45.src.rpm nvidia-driver-620.70.06-1.fc45.x86_64.rpm nvidia-driver-selinux-0.1-3.fc45.noarch.rpm; do
+        awk -v n="$n" '$2 == n { print $1 }' "$M/ok/SHA256SUMS"; done | paste -sd' ')"
+check "pair-inputs: a new tag is created with every file" 0 "$(inputs publish "$M/ok")"
+check "pair-inputs: and holds exactly the inputs and SHA256SUMS" "$ALL_FILES" "$(release_files)"
+check "pair-inputs: one write" 1 "$(gh_writes)"
+check "pair-inputs: publishing again writes nothing" "0 1" "$(inputs publish "$M/ok") $(gh_writes)"
+
+rm "$M/gh/releases/$TAG/nvidia-driver-620.70.06-1.fc45.x86_64.rpm"
+check "pair-inputs: a release lacking an input gets it added" 0 "$(inputs publish "$M/ok")"
+check "pair-inputs: that one alone" "release upload $TAG --repo apex-linux/apex-kernel -- $M/ok/nvidia-driver-620.70.06-1.fc45.x86_64.rpm" \
+    "$(grep '^release upload ' "$M/gh/log" | tail -n 1)"
+check "pair-inputs: and the release is whole again" "$ALL_FILES" "$(release_files)"
+
+: >"$M/gh/log"
+cp "$M/gh/releases/$TAG/pubkey.gpg" "$M/pubkey.keep"
+printf 'x' >>"$M/gh/releases/$TAG/pubkey.gpg"
+check "pair-inputs: an existing tag with a different asset is refused" 1 "$(inputs publish "$M/ok")"
+check "pair-inputs: naming it" "pair-inputs.sh: $TAG holds a different pubkey.gpg" "$(tail -n 1 "$M/out")"
+check "pair-inputs: and nothing is uploaded or replaced" "0 x" "$(gh_writes) $(tail -c 1 "$M/gh/releases/$TAG/pubkey.gpg")"
+cp "$M/pubkey.keep" "$M/gh/releases/$TAG/pubkey.gpg"
+printf 'stray\n' >"$M/gh/releases/$TAG/extra.rpm"
+rm "$M/gh/releases/$TAG/nvidia-driver-620.70.06-1.fc45.x86_64.rpm"
+check "pair-inputs: an existing tag with an asset these pins do not name is refused" 1 "$(inputs publish "$M/ok")"
+check "pair-inputs: naming it" "pair-inputs.sh: $TAG holds extra.rpm, which these pins do not name" "$(tail -n 1 "$M/out")"
+check "pair-inputs: before adding the missing one" 0 "$(gh_writes)"
+rm -r "$M/gh/releases/$TAG"
+
+cp "$M/ok/SHA256SUMS" "$M/sums.keep"
+printf 'x' >>"$M/ok/nvidia-kmod-620.70.06-1.fc45.src.rpm"
+check "pair-inputs: a file changed after collect is refused" 1 "$(inputs publish "$M/ok")"
+check "pair-inputs: naming it" "pair-inputs.sh: $M/ok does not match its SHA256SUMS" "$(tail -n 1 "$M/out")"
+fresh ok && inputs collect "$M/ok" >/dev/null && printf 'stray\n' >"$M/ok/extra"
+check "pair-inputs: a file SHA256SUMS does not list is refused" 1 "$(inputs publish "$M/ok")"
+check "pair-inputs: and no release is written" "0" "$(gh_writes)"
+
+wrong() { # NAME URL CONTENT-COMMAND EXPECTED-REASON: collect refuses a served input
+    local keep=$M/keep
+    cp "$M/http/$(printf '%s' "$2" | tr -c 'A-Za-z0-9._-' '_')" "$keep"
+    eval "$3" | serve "$2"
+    fresh bad
+    check "pair-inputs: $1 is refused" 1 "$(inputs collect "$M/bad")"
+    check "pair-inputs: $1, the reason" "pair-inputs.sh: $4" "$(tail -n 1 "$M/out")"
+    check "pair-inputs: $1, so no SHA256SUMS to publish" "1 pair-inputs.sh: $M/bad has no SHA256SUMS: collect did not finish 0" \
+        "$(inputs publish "$M/bad") $(tail -n 1 "$M/out") $(gh_writes)"
+    serve "$2" <"$keep"
+}
+: >"$M/gh/log"
+KMOD_URL=$NEG/SRPMS/nvidia-kmod-620.70.06-1.fc45.src.rpm
+wrong "an RPM with another sha256" "$KMOD_URL" "fake_rpm_file /dev/stdout $NEGATIVO17_FPR other" \
+    "nvidia-kmod-620.70.06-1.fc45.src.rpm does not have its pinned sha256"
+sed -i "s/^kmod_srpm_sha256=.*/kmod_srpm_sha256=$(fake_rpm_file /dev/stdout "$OTHER_FPR" nvidia-kmod-3:620.70.06-1.fc45.src | sha256sum | cut -d' ' -f1)/" "$M/kernel/nvidia.env"
+wrong "an RPM signed by another key" "$KMOD_URL" "fake_rpm_file /dev/stdout $OTHER_FPR nvidia-kmod-3:620.70.06-1.fc45.src" \
+    "nvidia-kmod-620.70.06-1.fc45.src.rpm is not signed by its pinned key"
+sed -i "s/^kmod_srpm_sha256=.*/kmod_srpm_sha256=$N_SUM/" "$M/kernel/nvidia.env"
+wrong "a key file that is not the pinned key" https://negativo17.org/repos/RPM-GPG-KEY-slaanesh "echo fpr=$OTHER_FPR" \
+    "RPM-GPG-KEY-slaanesh is not exactly the pinned key ${NEGATIVO17_FPR^^}"
+mv "$M/http/$(printf '%s' "$KMOD_URL" | tr -c 'A-Za-z0-9._-' '_')" "$M/kmod.keep"
+fresh bad
+check "pair-inputs: an input upstream no longer serves is refused" 1 "$(inputs collect "$M/bad")"
+check "pair-inputs: naming its URL" "pair-inputs.sh: cannot download $KMOD_URL" "$(tail -n 1 "$M/out")"
+mv "$M/kmod.keep" "$M/http/$(printf '%s' "$KMOD_URL" | tr -c 'A-Za-z0-9._-' '_')"
+check "pair-inputs: collect wants an empty directory" 2 "$(inputs collect "$M/ok")"

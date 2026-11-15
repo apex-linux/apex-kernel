@@ -35,6 +35,9 @@ jobs:
       - name: actionlint
         run: actionlint -config-file .github/scripts/actionlint.yaml
 
+      - name: Workflow permissions, timeouts and pins
+        run: .github/scripts/workflow-check.sh .github/workflows .github/scripts/workflow-allowed.txt
+
       - name: bash -n and shellcheck
         run: |
           files=(.github/scripts/*.sh packaging/libfprint/build.sh packaging/pkgs/kernel/*.sh)
