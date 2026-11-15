@@ -140,7 +140,9 @@ person's. In order:
 1. `bump.sh check` prints `nvidia NEVRA SHA256 newer soaking-Nd` for a newer build of
    the pinned branch, and `newer soaked` once its repodata build time is `soak_days`
    (`nvidia.env`, 7 when absent) old. A new branch is not offered: a branch change is
-   a pin edit by hand, for the owner.
+   a pin edit by hand, for the owner. When the pinned branch is gone upstream and a newer
+   one exists, `check` says so on stderr ("nvidia pinned branch 615 gone; newest branch
+   620, owner decision"); stdout keeps the lines apex-lane parses.
 2. When every newer line reads `soaked`, `bump.sh nvidia-env` prints the candidate
    `nvidia.env`: `kmod_srpm`, `kmod_srpm_sha256` and each `userspace` line moved to the
    newest build of the branch, every other line as it was. It refuses, with exit 1 and
