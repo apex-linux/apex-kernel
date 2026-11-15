@@ -606,7 +606,17 @@ repo x86_64 "nvidia-driver x86_64 3 620.10 1.fc45 $SUM_B $(days_ago 1)"
 check "bump: no build of the pinned branch is missing" "nvidia nvidia-driver missing" "$(bump | grep '^nvidia nvidia-driver')"
 check "nvidia-env: refuses a missing package" 1 "$(nvidia_env_rc)"
 check "nvidia-env: names the missing package" "bump.sh: nvidia-driver has no build of the pinned branch" "$(tail -n 1 "$B/stderr")"
+nvidia_env_before=$(sha256sum <"$B/kernel/nvidia.env")
+check "bump: a gone branch names its successor, for the owner" "nvidia pinned branch 615 gone; newest branch 620, owner decision" \
+    "$(PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" BUMP_NOW=$BUMP_AT "$B/kernel/bump.sh" check 2>&1 >/dev/null)"
+check "bump: and stdout keeps the lane's lines" "nvidia nvidia-kmod-3:615.80.01-1.fc45.src $SUM_B newer soaked
+nvidia nvidia-driver missing" \
+    "$(PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" BUMP_NOW=$BUMP_AT "$B/kernel/bump.sh" check 2>/dev/null | grep '^nvidia ')"
+check "bump: a gone branch moves no pin" "$nvidia_env_before" "$(sha256sum <"$B/kernel/nvidia.env")"
+repo x86_64 "nvidia-driver x86_64 3 610.43.03 1.fc45 $SUM_B $(days_ago 90)"
+check "bump: no newer branch, no successor named" "" "$(bump | grep '^nvidia pinned branch')"
 x86_64_repo
+check "bump: the pinned branch present, no successor named" "" "$(bump | grep '^nvidia pinned branch')"
 
 # --- bump.sh: FEDORA picks the release's pins, chroot and repository -----------------
 bump46() { env -u FEDORA PATH="$B/bin:$PATH" FAKE_HTTP="$B/http" BUMP_NOW=$BUMP_AT FEDORA=46 "$B/kernel/bump.sh" "$@" 2>&1; }
