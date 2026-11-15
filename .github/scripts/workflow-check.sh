@@ -11,7 +11,8 @@ workflow-check.sh DIR ALLOWED
 Checks every workflow in DIR: top-level permissions: {}, an explicit permissions: and
 timeout-minutes: on each job, every uses: pinned to a 40-hex commit with a # version comment,
 no pull_request_target, and no write permission unless ALLOWED has an exact
-WORKFLOW JOB PERMISSION REASON line for it. Taken from apex-image's check, without its gates rules.
+WORKFLOW JOB PERMISSION REASON line for it. A workflow that grants a write runs on push
+alone, in block form. Taken from apex-image's check, without its gates rules.
 
   workflow-check.sh DIR ALLOWED    exit 0 when every workflow passes
 EOF
@@ -44,6 +45,22 @@ for number, line in enumerate(allowed_lines, 1):
         allowed[tuple(words[:3])] = number
 used = set()
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}\s+#\s*\S+")
+PUSH_ONLY = re.compile(r"""^\s{2}['"]?push['"]?\s*:""")
+
+
+def push_only(code):
+    on = [i for i, (_, l) in enumerate(code) if re.match(r"""^['"]?on['"]?\s*:""", l)]
+    if len(on) != 1 or code[on[0]][1].split(":", 1)[1].split(" #", 1)[0].strip():
+        return False
+    children = []
+    for _, l in code[on[0] + 1:]:
+        indent = len(l) - len(l.lstrip())
+        if indent == 0:
+            break
+        children.append((indent, l))
+    if not children or children[0][0] != 2:
+        return False
+    return all(PUSH_ONLY.match(l) for indent, l in children if indent <= 2)
 
 for name in workflows:
     path = os.path.join(workdir, name)
@@ -78,10 +95,13 @@ for name in workflows:
                     jobs[current]["grants"].append((n, value))
             elif key == "timeout-minutes" and value:
                 jobs[current]["timeout"] = True
-        elif grants and indent == 6:
+        elif grants and indent > 4:
             jobs[current]["grants"].append((n, l.strip()))
     if not jobs:
         problems.append(f"{path}: no jobs")
+    writes = any("write" in grant for job in jobs.values() for _, grant in job["grants"])
+    if writes and not push_only(code):
+        problems.append(f"{path}: a workflow that grants a write permission runs on push alone, in block form (on:, then   push:)")
     for job_name, job in jobs.items():
         where = f"{path}:{job['line']}: job {job_name}"
         if not job["permissions"]:

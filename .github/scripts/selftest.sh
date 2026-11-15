@@ -218,6 +218,18 @@ check "workflows: an allow line no job needs" 1 "$(wf "printf 'ci.yml build cont
 check_true "names the stale line" grep -qF "allowed:2: ci.yml build contents:write is no longer granted" "$WF.err"
 check "workflows: an allow line without a reason" 1 "$(wf "printf 'ci.yml build contents:write\n' >>allowed")"
 check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" "$WF.err"
+WRITE8="sed -i 's/^      contents: read$/        contents: write/' wf/ci.yml"
+check "workflows: a write grant indented 8, with no reason" 1 "$(wf "$WRITE8")"
+check_true "names the grant" grep -qF "wf/ci.yml:10: job build grants 'contents: write' with no reason in allowed" "$WF.err"
+ALLOW_WRITE="printf 'ci.yml build contents:write  it pushes the tag\n' >>allowed"
+check "workflows: the same with its reason" 0 "$(wf "$WRITE8; $ALLOW_WRITE")"
+WRITE="sed -i 's/contents: read/contents: write/' wf/ci.yml; $ALLOW_WRITE"
+check "workflows: a writing workflow that also runs on pull_request" 1 "$(wf "$WRITE; sed -i 's/^  push: {}$/  push: {}\n  pull_request: {}/' wf/ci.yml")"
+check_true "is named" grep -qF "wf/ci.yml: a workflow that grants a write permission runs on push alone" "$WF.err"
+check "workflows: a writing workflow's triggers as a next-line flow sequence" 1 "$(wf "$WRITE; sed -i 's/^  push: {}$/  [push, pull_request]/' wf/ci.yml")"
+check "workflows: a writing workflow's triggers as a 4-space block" 1 "$(wf "$WRITE; sed -i 's/^  push: {}$/    push: {}/' wf/ci.yml")"
+check "workflows: a writing workflow's triggers inline" 1 "$(wf "$WRITE; sed -i 's/^on:$/on: push/; /^  push: {}$/d' wf/ci.yml")"
+check "workflows: a reading workflow may run on anything" 0 "$(wf "sed -i 's/^  push: {}$/  push: {}\n  pull_request: {}/' wf/ci.yml")"
 check "workflows: pair-inputs' write is the mirror job's alone, on a push to main" \
     "branches: [main]|contents: write|if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
     "$(grep -hoE "contents: write|if: github.event_name == 'push' && github.ref == 'refs/heads/main'|branches: \[main\]" "$APEX_ROOT/.github/workflows/pair-inputs.yml" | LC_ALL=C sort -u | paste -sd'|')"
