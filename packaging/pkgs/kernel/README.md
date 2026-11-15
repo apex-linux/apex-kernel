@@ -114,7 +114,7 @@ any lock exists: a set that does not check holds the pair with a `source:` reaso
 every series entry; exactly the two pinned SRPM names in `srpms/`, each with its pinned
 sha256; the licences; `README.source`; then that `SHA256SUMS` lists every file, no more,
 and matches. On 2026-10-24 it passed on a set of the real 7.3.0-4 and 615.78.08 SRPMs
-with the pins of this directory, and refused it after one changed byte.
+with the pins of that day, and refused it after one changed byte.
 
 What apex-image consumes: the directory `OUT/source/` as it is, checked with
 `source-check.sh`. Publishing it next to an image digest, as an OCI artifact that refers
@@ -372,8 +372,8 @@ Steps 1 and 3 again, on Linux 7.3.0, in a cloud container instead of the builder
 (`fedora@sha256:322dd035…`, not `REPOS_BASE`), repositories `fedora` and `updates` only.
 Step 1's two rebuilds did not run: K1's rpmbuild tree peaked at 34.2 GB and the
 container had 29 GB free. The kernel build stays a builder-VM job. Every number below
-comes from a saved command output, kept outside the repository. `kernel.env` and
-`nvidia.env` pin exactly these inputs.
+comes from a saved command output, kept outside the repository. `kernel.env` pins
+exactly these inputs; `nvidia.env` pinned them until [NVIDIA 620](#nvidia-620-2026-11-15).
 
 ### Inputs
 
@@ -469,14 +469,17 @@ requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
 
 negativo17 removed `nvidia-kmod-615.78.08-1.fc45.src.rpm` (404); fedora-45/SRPMS has
 only 620.70.06 `-1` and `-2`, so r25's pair build failed. A branch change is a pin edit
-by hand ([Driver bump](#driver-bump)): `nvidia.env` was seeded with the 620 lines and
-`bump.sh check` confirmed every one as the branch's newest, sums equal to the repodata.
+by hand ([Driver bump](#driver-bump)): `nvidia.env` was seeded with the 620 lines, and
+`bump.sh check`, which compares the repodata alone and checks no signature, then reads
+`pinned` for every userspace line and `nvidia-driver-selinux`, and `newer soaking-5d`
+for the kmod, naming `-2` with `-2`'s sum. The kmod pin's sha256 was compared with the
+repodata by hand.
 
 | Input | Value |
 |---|---|
-| kmod SRPM | `nvidia-kmod-3:620.70.06-1.fc45.src.rpm`, built 2026-11-05 08:05 UTC (soaked), sha256 `4e9422b61c94014d264ae4d7003e78c40a6339bb5a50fc27aef2af69f0e13c54`, equal to the repodata |
+| kmod SRPM | `nvidia-kmod-3:620.70.06-1.fc45.src.rpm`, built 2026-11-05 08:05 UTC (soaked), sha256 `4e9422b61c94014d264ae4d7003e78c40a6339bb5a50fc27aef2af69f0e13c54`, equal to the repodata; RSA/SHA512 signature OK against the negativo17 key alone, `NOKEY` and exit 1 with an empty keyring. Its patches: scaronni `f84dd30` and `62a33c4`, the Anatase pair as in 615, and `e8197c8` and `77957d1`, the Bigscreen Beyond WAR database entry and VESA DSC 1.1 RC parameters, new in `-1` ("Add Big Screen Beyond patches") |
 | Userspace | the same eight packages at 3:620.70.06-1, built 2026-11-04 and 05; `nvidia-driver-selinux` 0.1-3 unchanged. 620 has no `-2` userspace |
-| Not taken | kmod `-2` (built 2026-11-12 17:39 UTC, soaked from 2026-11-19 17:39): one patch, scaronni/open-gpu-kernel-modules `fdec4df`, "Re-enable D3 Power Management for 7.3". `bump.sh` offers it once soaked |
+| Not taken | kmod `-2` (built 2026-11-12 17:39 UTC, soaked from 2026-11-19 17:39): one patch, scaronni/open-gpu-kernel-modules `fdec4df` (its subject: "nvidia: Open the PCI sysfs config file through init's root on Linux 7.3"; `-2`'s `%changelog` line: "Re-enable D3 Power Management for 7.3"). `bump.sh` offers it once soaked |
 
 - **Linux 7.3 and runtime D3.** 7.3 starts kthreads in an empty nullfs, so `-1`'s probe
   cannot open the GPU's PCI config file and RM logs "Runtime D3 status: Disabled by
@@ -491,7 +494,8 @@ by hand ([Driver bump](#driver-bump)): `nvidia.env` was seeded with the 620 line
 - **The GPU.** 620's own supported-GPU table lists `25A2` as "NVIDIA GeForce RTX 3050
   Laptop GPU". Against the 615.78.08 tag's table it drops nothing and adds nine
   Blackwell rows (745 to 754).
-- **The packaging.** Unchanged for us. `nvidia-kmod-common` carries the same GSP and
+- **The packaging.** Unchanged for us, apart from two new display-path patches in the
+  kmod, for a VR headset we don't ship for. `nvidia-kmod-common` carries the same GSP and
   ucode files (`gsp_ga10x.bin` for the GA107) plus `display-t264-dce.bin`, Tegra
   display firmware unused on x86; its requires, `modprobe.d/nvidia.conf`,
   `99-nvidia.conf`, `60-nvidia.rules` and `nvidia-boot-update` are byte-identical to
