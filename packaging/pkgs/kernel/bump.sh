@@ -29,6 +29,10 @@ is not in releases.json). Then one line per package of nvidia.env:
                                                more days to go
   nvidia NAME missing                          no build of the pinned branch
 
+When a package's pinned branch is gone and negativo17 has a newer one, check also
+says so on stderr, "nvidia pinned branch B gone; newest branch N, owner decision", and
+moves nothing: a branch change is the owner's, by hand.
+
 nvidia-env prints, on stdout, the nvidia.env that pins the newest soaked build of the
 pinned branch for every package, the other lines kept as they are. It refuses, with
 exit 1 and the reason on the last line, while a package is missing, still soaking,
@@ -178,9 +182,9 @@ soak_days() {
     printf '%s\n' "$days"
 }
 
-# One line per pinned package: "pin NAME NEVRA SHA256 STATUS [SOAK]" or "pin NAME missing".
+# One line per pinned package: "pin NAME NEVRA SHA256 STATUS [SOAK]" or "pin NAME missing [BRANCH NEWER-BRANCH]".
 nvidia_builds() {
-    local release nevra name version rel arch branch newest status soak days built newest_vr newest_epoch newest_sum
+    local release nevra name version rel arch branch newest successor status soak days built newest_vr newest_epoch newest_sum
     release=fedora-$fedora
     days=$(soak_days)
     local -A seen=()
@@ -195,7 +199,9 @@ nvidia_builds() {
         newest=$(awk -v n="$name" -v a="$arch" -v b="$branch" '$1 == n && $2 == a && index($4, b ".") == 1 || $1 == n && $2 == a && $4 == b { print $4 "-" $5, $3, $6, $7 }' \
             <<<"$available" | sort -V -k1,1 | tail -n 1)
         if [[ -z $newest ]]; then
-            printf 'pin %s missing\n' "$name"
+            successor=$(awk -v n="$name" -v a="$arch" -v b="$branch" '$1 == n && $2 == a { split($4, v, "."); if (v[1] + 0 > b + 0) print v[1] }' \
+                <<<"$available" | sort -n | tail -n 1)
+            printf 'pin %s missing%s\n' "$name" "${successor:+ $branch $successor}"
             continue
         fi
         read -r newest_vr newest_epoch newest_sum built <<<"$newest"
@@ -220,7 +226,9 @@ nvidia_builds() {
 check_nvidia() {
     local builds
     builds=$(nvidia_builds)
-    sed -E 's/^pin ([^ ]+) missing$/nvidia \1 missing/; t; s/^pin [^ ]+ /nvidia /' <<<"$builds"
+    sed -E 's/^pin ([^ ]+) missing( [0-9]+ [0-9]+)?$/nvidia \1 missing/; t; s/^pin [^ ]+ /nvidia /' <<<"$builds"
+    sed -nE 's/^pin [^ ]+ missing ([0-9]+) ([0-9]+)$/nvidia pinned branch \1 gone; newest branch \2, owner decision/p' <<<"$builds" |
+        sort -u >&2
 }
 
 driver_version() { sed -n 's/^[^:]*-[0-9]*:\([^-]*\)-.*/\1/p' <<<"$1"; }
