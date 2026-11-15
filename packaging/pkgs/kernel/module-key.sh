@@ -5,6 +5,7 @@ set -euo pipefail
 readonly PRIVATE_KEY_WITH_CERTIFICATE=signing_key.pem
 readonly CERTIFICATE_DER=signing_key.x509
 readonly VALID_DAYS=36500
+readonly MAX_COMMON_NAME_BYTES=64
 
 usage() {
     cat <<'EOF'
@@ -16,7 +17,8 @@ The module-signing key of one kernel and NVIDIA pair build (ADR 0015).
 generate  writes DIR/signing_key.pem, an ECDSA P-384 private key followed by its
           self-signed certificate (the file CONFIG_MODULE_SIG_KEY names), and
           DIR/signing_key.x509, the certificate alone in DER. DIR must be an empty
-          tmpfs. Prints the certificate's serial and SHA-256 fingerprint.
+          tmpfs. COMMON-NAME is at most 64 bytes, RFC 5280's limit. Prints the
+          certificate's subject, serial and SHA-256 fingerprint.
 shred     overwrites and removes the private key. The certificate stays.
 EOF
 }
@@ -56,12 +58,14 @@ generate() {
     local dir=$1 common_name=$2
     [[ $common_name =~ ^[A-Za-z0-9][A-Za-z0-9._+\ -]*$ ]] ||
         die "the common name may hold letters, digits, spaces and . _ + - only, got '$common_name'"
+    ((${#common_name} <= MAX_COMMON_NAME_BYTES)) ||
+        die "the common name is ${#common_name} bytes; RFC 5280 allows $MAX_COMMON_NAME_BYTES: '$common_name'"
     require_empty_tmpfs "$dir"
     umask 077
     request_config "$common_name" >"$dir/request.conf"
     openssl req -new -x509 -nodes -utf8 -batch -sha512 -days "$VALID_DAYS" \
         -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -config "$dir/request.conf" \
-        -outform PEM -keyout "$dir/$PRIVATE_KEY_WITH_CERTIFICATE" -out "$dir/$PRIVATE_KEY_WITH_CERTIFICATE" 2>/dev/null ||
+        -outform PEM -keyout "$dir/$PRIVATE_KEY_WITH_CERTIFICATE" -out "$dir/$PRIVATE_KEY_WITH_CERTIFICATE" ||
         die "openssl could not generate the key"
     rm -f -- "$dir/request.conf"
     openssl x509 -in "$dir/$PRIVATE_KEY_WITH_CERTIFICATE" -outform DER -out "$dir/$CERTIFICATE_DER"
