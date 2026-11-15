@@ -465,6 +465,40 @@ requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
   `distribution-gpg-keys` holds only the same person's COPR keys. The 50 newest commits
   of negativo17/nvidia-kmod are unsigned, and it has no tags.
 
+## NVIDIA 620 (2026-11-15)
+
+negativo17 removed `nvidia-kmod-615.78.08-1.fc45.src.rpm` (404); fedora-45/SRPMS has
+only 620.70.06 `-1` and `-2`, so r25's pair build failed. A branch change is a pin edit
+by hand ([Driver bump](#driver-bump)): `nvidia.env` was seeded with the 620 lines and
+`bump.sh check` confirmed every one as the branch's newest, sums equal to the repodata.
+
+| Input | Value |
+|---|---|
+| kmod SRPM | `nvidia-kmod-3:620.70.06-1.fc45.src.rpm`, built 2026-11-05 08:05 UTC (soaked), sha256 `4e9422b61c94014d264ae4d7003e78c40a6339bb5a50fc27aef2af69f0e13c54`, equal to the repodata |
+| Userspace | the same eight packages at 3:620.70.06-1, built 2026-11-04 and 05; `nvidia-driver-selinux` 0.1-3 unchanged. 620 has no `-2` userspace |
+| Not taken | kmod `-2` (built 2026-11-12 17:39 UTC, soaked from 2026-11-19 17:39): one patch, scaronni/open-gpu-kernel-modules `fdec4df`, "Re-enable D3 Power Management for 7.3". `bump.sh` offers it once soaked |
+
+- **Linux 7.3 and runtime D3.** 7.3 starts kthreads in an empty nullfs, so `-1`'s probe
+  cannot open the GPU's PCI config file and RM logs "Runtime D3 status: Disabled by
+  default": the M7400QC's dGPU (`10de:25a2`, render offload only) never runtime-suspends
+  until `-2`. 7.3.0-4.cachyos1 exports `userspace_init_fs`, and `-2`'s `nvidia.ko`
+  imports it (`nm -u`); `-1`'s does not.
+- **The build.** Both `-1` and `-2` build unmodified on the COPR's 7.3.0-4.cachyos1
+  `-devel` through `kmod-build.sh` with its `vmlinux` (5:19 and 5:36 wall, `fedora:45`).
+  `check.sh`'s `check_nvidia` passes on each: the same five modules as 615, signed by
+  the job's throwaway key, each with `.BTF`, requiring
+  `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64`; `modinfo` version 620.70.06.
+- **The GPU.** 620's own supported-GPU table lists `25A2` as "NVIDIA GeForce RTX 3050
+  Laptop GPU". Against the 615.78.08 tag's table it drops nothing and adds nine
+  Blackwell rows (745 to 754).
+- **The packaging.** Unchanged for us. `nvidia-kmod-common` carries the same GSP and
+  ucode files (`gsp_ga10x.bin` for the GA107) plus `display-t264-dce.bin`, Tegra
+  display firmware unused on x86; its requires, `modprobe.d/nvidia.conf`,
+  `99-nvidia.conf`, `60-nvidia.rules` and `nvidia-boot-update` are byte-identical to
+  615's. Open modules stay the default, GSP the default from Turing on, the minimum
+  kernel 4.15; the known issues name neither RTD3 nor Linux 7.
+- The laptop run stays the owner's (ACCEPTANCE §4).
+
 ## What S1c must do
 
 - Poll the COPR per chroot. The builds of 7.2.5 to 7.2.8 are all `failed` overall (for
