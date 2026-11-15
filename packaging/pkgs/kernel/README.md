@@ -141,8 +141,9 @@ person's. In order:
    the pinned branch, and `newer soaked` once its repodata build time is `soak_days`
    (`nvidia.env`, 7 when absent) old. A new branch is not offered: a branch change is
    a pin edit by hand, for the owner. When the pinned branch is gone upstream and a newer
-   one exists, `check` says so on stderr ("nvidia pinned branch 615 gone; newest branch
-   620, owner decision"); stdout keeps the lines apex-lane parses.
+   one exists, `check` says so on stderr, as it would have on 2026-11-15 ("nvidia pinned
+   branch 615 gone; newest branch 620, owner decision"); stdout keeps the lines
+   apex-lane parses.
 2. When every newer line reads `soaked`, `bump.sh nvidia-env` prints the candidate
    `nvidia.env`: `kmod_srpm`, `kmod_srpm_sha256` and each `userspace` line moved to the
    newest build of the branch, every other line as it was. It refuses, with exit 1 and
@@ -471,7 +472,8 @@ requires `kernel-uname-r = 7.3.0-4.cachyos1.fc45.x86_64` and
 
 negativo17 removed `nvidia-kmod-615.78.08-1.fc45.src.rpm` (404); fedora-45/SRPMS has
 only 620.70.06 `-1` and `-2`, so r25's pair build failed. A branch change is a pin edit
-by hand ([Driver bump](#driver-bump)): `nvidia.env` was seeded with the 620 lines, and
+by hand ([Driver bump](#driver-bump); `bump.sh check` now names the successor branch on
+stderr when the pinned one is gone): `nvidia.env` was seeded with the 620 lines, and
 `bump.sh check`, which compares the repodata alone and checks no signature, then reads
 `pinned` for every userspace line and `nvidia-driver-selinux`, and `newer soaking-5d`
 for the kmod, naming `-2` with `-2`'s sum. The kmod pin's sha256 was compared with the
